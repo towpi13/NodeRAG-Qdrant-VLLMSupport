@@ -22,7 +22,7 @@
 
 ---
 
-🚀 NodeRAG is a heterogeneous graph-based generation and retrieval RAG system that you can install and use in multiple ways. 🖥️ We also provide a user interface (local deployment) and convenient tools for visualization generation. You can read our [paper](#) 📄 to learn more. For experimental discussions, check out our [blog posts](/blog) 📝. 
+🚀 NodeRAG is a heterogeneous graph-based generation and retrieval RAG system that you can install and use in multiple ways. 🖥️ We also provide a user interface (local deployment) and convenient tools for visualization generation. You can read our [paper](#) 📄 to learn more. For experimental discussions, check out our [blog posts](https://terry-xu-666.github.io/NodeRAG_web/blog/) 📝. 
 
 ---
 
@@ -38,6 +38,41 @@
 </div>
 
 ---
+
+## NodeRAG
+
+### Conda Setup
+
+Create and activate a virtual environment for NodeRAG:
+
+```bash
+conda create -n NodeRAG python=3.10
+conda activate NodeRAG
+```
+
+---
+
+### Install `uv` (Optional: Faster Package Installation)
+
+To speed up package installation, use [`uv`](https://github.com/astral-sh/uv):
+
+```bash
+pip install uv
+```
+
+---
+
+### Install NodeRAG
+
+Install NodeRAG using `uv` for optimized performance:
+
+```bash
+uv pip install NodeRAG
+```
+
+### Next
+> For indexing and answering processes, please refer to our website: [Indexing](https://terry-xu-666.github.io/NodeRAG_web/docs/indexing/) and [Answering](https://terry-xu-666.github.io/NodeRAG_web/docs/answer/)
+
 
 ## ✨ Features
 
