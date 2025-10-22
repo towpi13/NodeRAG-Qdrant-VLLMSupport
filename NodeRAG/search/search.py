@@ -108,8 +108,6 @@ class NodeSearch():
         prompt = self.config.prompt_manager.decompose_query.format(query=query)
         response = self.config.API_client.request({'query':prompt,'response_format':self.config.prompt_manager.decomposed_text_json})
         
-        # --- START OF MODIFICATION ---
-
         # Case 1: The response is the expected dictionary format -> {'elements': [...]}
         if isinstance(response, dict):
             # Use .get() for safe access in case the 'elements' key is missing
@@ -128,10 +126,7 @@ class NodeSearch():
         # Fallback: If the response is in an unknown format, log a warning and return an empty list
         # to prevent the program from crashing.
         print(f"WARN: Unexpected format from API in decompose_query. Response: {response}")
-        return []
-        
-        # --- END OF MODIFICATION ---
-    
+        return []    
     
     def accurate_search(self, entities: List[str]) -> List[str]:
         accurate_results = []

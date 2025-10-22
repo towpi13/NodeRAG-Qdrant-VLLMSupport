@@ -408,7 +408,6 @@ class Gemini_Embedding(LLM):
             with requests.post(self.api_url, headers=self.headers, json=payload, timeout=180) as response:
                 response.raise_for_status()
                 response_json = response.json()
-                print("-----rESPONSE JSON-----", response_json)
                 # Extract the vector values from the embeddings list
                 return [embedding['values'] for embedding in response_json.get('embeddings', [])]
 
@@ -460,28 +459,22 @@ class VLLM_Embedding(LLM):
                  api_keys: str | None,
                  Config: dict | None) -> None:
         
-        # MODIFIED: The primary source of truth is now the Config dictionary.
         # Call the parent constructor with the model_name from the config.
         super().__init__(model_name, api_keys, Config)
         
         if not Config:
             raise ValueError("A 'Config' dictionary is required for the vLLM provider.")
         
-        # NEW: Explicitly get the base_url from the 'Config' dictionary.
         self.base_url = Config.get('base_url')
         if not self.base_url:
             raise ValueError("The 'Config' dictionary must contain a 'base_url' key for the vLLM provider.")
         
-        # NEW: The model name for the payload is the primary 'model_name' from the config.
-        # This instance variable is used by the _create_embedding methods.
         self.payload_model_name = model_name
         if not self.payload_model_name:
              raise ValueError("The 'Config' dictionary must contain a 'model_name' key.")
 
-        # --- No changes below this line ---
         self.client = httpx.Client()
         self.client_async = httpx.AsyncClient()
-        # The endpoint is constructed from the base_url read from the config.
         self.endpoint = f"{self.base_url.strip().rstrip('/')}/v1/embeddings"
     
     @backoff.on_exception(backoff.expo, 
@@ -491,7 +484,6 @@ class VLLM_Embedding(LLM):
 
 
     def _create_embedding(self, input: Embedding_message) -> Embedding_output:
-        # CHANGED: The 'model' in the payload now uses the name from the Config.
         payload = {
             "model": self.payload_model_name,
             "input": input
