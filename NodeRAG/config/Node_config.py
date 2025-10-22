@@ -52,12 +52,19 @@ class NodeConfig():
         self.main_folder = self.config.get('main_folder')
         if self.main_folder is None:
             raise ValueError('main_folder is not set')
-        
+                
+        # Vector store settings
         self.vector_store = self.config.get('vector_store', 'hnsw') # Default to 'hnsw' if missing
         self.qdrant_url = self.config.get('qdrant_url', None)
         self.qdrant_collection_name = self.config.get('qdrant_collection_name', None)
         self.qdrant_api_key = self.config.get('qdrant_api_key', None)
         
+        # Graph database settings
+        self.graph_db_type = self.config.get('graph_db_type', 'networkx') # Default to 'networkx'
+        self.neo4j_uri = self.config.get('neo4j_uri', None)
+        self.neo4j_user = self.config.get('neo4j_user', None)
+        self.neo4j_password = self.config.get('neo4j_password', None)
+                
         if not os.path.exists(self.main_folder):
             raise ValueError(f'main_folder {self.main_folder} does not exist')
         

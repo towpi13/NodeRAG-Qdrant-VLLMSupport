@@ -2,22 +2,23 @@ from ..config import NodeConfig
 
 class Retrieval():
     
-    def __init__(self,config:NodeConfig,id_to_text:dict,accurate_id_to_text:dict,id_to_type:dict):
+    def __init__(self,config:NodeConfig):
         
         self.config = config
         self.HNSW_results_with_distance = None
         self._HNSW_results = None
-        self.id_to_text = id_to_text
-        self.accurate_id_to_text = accurate_id_to_text
+        # These will be populated later by the NodeSearch class
+        self.id_to_text = {}
+        self.accurate_id_to_text = {}
+        self.id_to_type = {}
+        
         self.accurate_results = None
         self.search_list = []
         self.unique_search_list = set()
-        self.id_to_type = id_to_type
         self.relationship_list = None
         self._retrieved_list = None
         self._structured_prompt = None
         self._unstructured_prompt = None
-        
         
         
     @property
@@ -43,9 +44,19 @@ class Retrieval():
     @property
     def retrieved_list(self):
         if self._retrieved_list is None:
-            self._retrieved_list = [(self.id_to_text[id],self.id_to_type[id]) for id in self.search_list]+ [(self.id_to_text[id],'relationship') for id in self.relationship_list]
+            retrieved = []
+            for id in self.search_list:
+                if id in self.id_to_text: # Ensure text exists
+                    retrieved.append((self.id_to_text[id], self.id_to_type.get(id, 'unknown')))
+            
+            for id in self.relationship_list:
+                 if id in self.id_to_text: # Ensure text exists
+                    retrieved.append((self.id_to_text[id], 'relationship'))
+            
+            self._retrieved_list = retrieved
         return self._retrieved_list
-    
+
+
     @property
     def structured_prompt(self):
         if self._structured_prompt is None:

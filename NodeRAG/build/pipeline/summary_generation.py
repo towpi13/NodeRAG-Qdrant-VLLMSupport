@@ -7,6 +7,9 @@ import math
 import numpy as np
 from qdrant_client import AsyncQdrantClient
 import uuid
+import networkx as nx
+import igraph as ig
+from neo4j import GraphDatabase
 
 from ...storage import (
     Mapper,
@@ -29,34 +32,99 @@ from ...logging import info_timer
 class SummaryGeneration:
     def __init__(self,config:NodeConfig):
         
+        # These lines are common to both versions
         self.config = config
         self.indices = self.config.indices
         self.communities = []
         self.high_level_elements = []
+        
+        self.graph_db_type = getattr(self.config, 'graph_db_type', 'networkx')
+        self.db_session = None
+        self.G = None
+        self.G_ig = None
+
+        # --- BLOCK 1: Logic for Neo4j ---
+        if self.graph_db_type == 'neo4j':
+            self.driver = GraphDatabase.driver(
+                self.config.neo4j_uri, 
+                auth=(self.config.neo4j_user, self.config.neo4j_password)
+            )
+            self.db_session = self.driver.session()
+            self.G_ig = self._get_igraph_from_neo4j() # Helper for community detection
+            self.G = self._get_graph_from_neo4j() # Helper for Community_summary class
+        
+        # --- BLOCK 2: Logic for NetworkX (your original logic) ---
+        else: 
+            if os.path.exists(self.config.graph_path):
+                self.G = storage.load(self.config.graph_path)
+                self.G_ig = IGraph(self.G).to_igraph()
+        
+        # --- BLOCK 3: Common logic that runs for BOTH modes ---
+        # This was moved out of the old "if" block
+        self.mapper = Mapper([self.config.semantic_units_path, self.config.attributes_path])
         self.qdrant_client = None 
 
-        if os.path.exists(self.config.graph_path):
-            self.mapper = Mapper([self.config.semantic_units_path,
-                                    self.config.attributes_path])
-            self.G = storage.load(self.config.graph_path)
-            self.G_ig = IGraph(self.G).to_igraph()
-            self.nodes_high_level_elements_group = []
-            self.nodes_high_level_elements_match = []
-
-            if getattr(self.config, 'vector_store', None) == 'qdrant':
-                self.config.console.print("[bold cyan]Summary pipeline is in Qdrant mode. Will fetch embeddings from the server.[/bold cyan]")
-                self.qdrant_client = AsyncQdrantClient(
-                    url=getattr(self.config, 'qdrant_url'),
-                    api_key=getattr(self.config, 'qdrant_api_key', None)
-                )
+        if getattr(self.config, 'vector_store', None) == 'qdrant':
+            self.config.console.print("[bold cyan]Summary pipeline is in Qdrant mode...")
+            self.qdrant_client = AsyncQdrantClient(
+                url=getattr(self.config, 'qdrant_url'),
+                api_key=getattr(self.config, 'qdrant_api_key', None)
+            )
+        else:
+            self.config.console.print("[bold cyan]Summary pipeline is in local file mode...")
+            if os.path.exists(self.config.embedding):
+                self.mapper.add_embedding(self.config.embedding)
             else:
-                self.config.console.print("[bold cyan]Summary pipeline is in local file mode. Loading embeddings from disk.[/bold cyan]")
-                if os.path.exists(self.config.embedding):
-                    self.mapper.add_embedding(self.config.embedding)
-                else:
-                    self.config.console.print(f"[bold red]ERROR: Local embedding file not found at {self.config.embedding}. Summary generation may fail.[/bold red]")
+                self.config.console.print(f"[bold red]ERROR: Local embedding file not found...")
 
+    def _get_graph_from_neo4j(self):
+        """
+        Builds a temporary in-memory NetworkX graph from Neo4j data.
+        This is needed for components that expect a NetworkX object for property lookups.
+        """
+        self.config.console.print("[cyan]Fetching graph from Neo4j to build temporary NetworkX object...[/cyan]")
+        temp_G = nx.Graph()
+        
+        # 1. Fetch all nodes and their types
+        node_query = "MATCH (n) RETURN n.hash_id AS node_id, labels(n)[0] AS node_type"
+        node_results = self.db_session.run(node_query)
+        for record in node_results:
+            # Map Neo4j Label (e.g., 'Entity') to your internal type name (e.g., 'entity')
+            node_type = record['node_type'].lower() if record['node_type'] else 'unknown'
+            temp_G.add_node(record['node_id'], type=node_type)
             
+        # 2. Fetch all relationships
+        edge_query = "MATCH (n)-[r]->(m) RETURN n.hash_id AS source, m.hash_id AS target"
+        edge_results = self.db_session.run(edge_query)
+        for record in edge_results:
+            temp_G.add_edge(record['source'], record['target'])
+            
+        return temp_G
+
+    def _get_igraph_from_neo4j(self):
+        """
+        Fetches the graph structure from Neo4j and builds an in-memory igraph object
+        for community detection algorithms.
+        """
+        self.config.console.print("[cyan]Fetching graph from Neo4j to build temporary igraph for analysis...[/cyan]")
+        query = "MATCH (n)-[r]->(m) RETURN n.hash_id AS source, m.hash_id AS target"
+        results = self.db_session.run(query)
+        
+        edge_list = [(record["source"], record["target"]) for record in results]
+        
+        if not edge_list:
+            self.config.console.print("[yellow]Graph is empty in Neo4j. Cannot perform community detection.[/yellow]")
+            return ig.Graph()
+
+        # Create an igraph object from the edge list.
+        # This automatically creates vertices and sets their 'name' attribute.
+        graph_ig = ig.Graph.TupleList(edge_list, directed=False)
+        
+        # The problematic and unnecessary line has been REMOVED.
+        # The 'name' attribute is already populated correctly by the line above.
+        
+        return graph_ig
+    
     def partition(self):
         
         partition = la.find_partition(self.G_ig,la.ModularityVertexPartition)
@@ -123,10 +191,10 @@ class SummaryGeneration:
     async def high_level_element_summary(self):
         results = []
         
-        # Safety Check 1: Ensure the summary file exists and is not empty before trying to read it.
+        # Safety Check 1: Ensure the summary file exists and is not empty.
         if not os.path.exists(self.config.summary_path) or os.path.getsize(self.config.summary_path) == 0:
             self.config.console.print("[bold yellow]WARN: Summary file is empty or does not exist. Skipping high-level element summary.[/bold yellow]")
-            return # Exit the function gracefully
+            return
 
         with open(self.config.summary_path, 'r', encoding='utf-8') as f:
             for line in f:
@@ -143,11 +211,9 @@ class SummaryGeneration:
             node_names = result.get('community')
             response_data = result.get('response')
 
-            # Safety Check 2: The 'response' must be a list to proceed.
             if isinstance(response_data, list):
                 for high_level_element in response_data:
                     
-                    # Safety Check 3: Ensure each item in the list is a dictionary with the keys we need.
                     if not isinstance(high_level_element, dict) or 'description' not in high_level_element or 'title' not in high_level_element:
                         self.config.console.print(f"[bold yellow]WARN: Skipping malformed high_level_element: {high_level_element}[/bold yellow]")
                         continue
@@ -155,19 +221,34 @@ class SummaryGeneration:
                     he = High_level_elements(high_level_element['description'], high_level_element['title'], self.config)
                     he.related_node(node_names)
                     
-                    if self.G.has_node(he.hash_id):
-                        self.G.nodes[he.hash_id]['weight'] += 1
-                        if self.G.has_node(he.title_hash_id):
-                            self.G.nodes[he.title_hash_id]['weight'] += 1
-                    else:
-                        self.G.add_node(he.hash_id, type='high_level_element', weight=1)
-                        self.G.add_node(he.title_hash_id, type='high_level_element_title', weight=1, related_node=he.hash_id)
+                    if self.graph_db_type == 'neo4j':
+                        # Use Cypher MERGE to create/update nodes and relationships
+                        self.db_session.run("""
+                            MERGE (h:HighLevelElement {hash_id: $h_id})
+                            ON CREATE SET h.weight = 1, h.type = 'high_level_element', h.context = $context
+                            ON MATCH SET h.weight = h.weight + 1
+                            
+                            MERGE (t:HighLevelElementTitle {hash_id: $t_id})
+                            ON CREATE SET t.weight = 1, t.type = 'high_level_element_title', t.related_node = $h_id, t.context = $title
+                            ON MATCH SET t.weight = t.weight + 1
+                            
+                            MERGE (h)-[:HAS_TITLE]->(t)
+                        """, h_id=he.hash_id, t_id=he.title_hash_id, context=he.context, title=he.title)
                         high_level_elements.append(he)
                     
-                    edge = (he.hash_id, he.title_hash_id)
-                    
-                    if not self.G.has_edge(*edge):
-                        self.G.add_edge(*edge, weight=1)
+                    else: # networkx mode
+                        if self.G.has_node(he.hash_id):
+                            self.G.nodes[he.hash_id]['weight'] += 1
+                            if self.G.has_node(he.title_hash_id):
+                                self.G.nodes[he.title_hash_id]['weight'] += 1
+                        else:
+                            self.G.add_node(he.hash_id, type='high_level_element', weight=1)
+                            self.G.add_node(he.title_hash_id, type='high_level_element_title', weight=1, related_node=he.hash_id)
+                            high_level_elements.append(he)
+                        
+                        edge = (he.hash_id, he.title_hash_id)
+                        if not self.G.has_edge(*edge):
+                            self.G.add_edge(*edge, weight=1)
             
             if node_names:
                 All_nodes.extend(node_names)
@@ -176,7 +257,6 @@ class SummaryGeneration:
 
         self.config.tracker.close()
 
-        # Safety Check 4: Don't proceed to embedding/clustering if no elements were created.
         if not self.high_level_elements:
             self.config.console.print("[bold yellow]WARN: No high-level elements were generated. Skipping embedding and clustering.[/bold yellow]")
             return
@@ -186,38 +266,26 @@ class SummaryGeneration:
         centroids = math.ceil(math.sqrt(len(All_nodes) + len(self.high_level_elements)))
         threshold = (len(All_nodes) + len(self.high_level_elements)) / centroids if centroids > 0 else 0
         n = 0
+        
+        # Clustering Logic to add more edges
         if threshold > self.config.Hcluster_size:
             embedding_list = None
             if self.qdrant_client:
-                # QDRANT MODE: Fetch the vectors for the nodes from the Qdrant server.
                 self.config.console.print(f"[cyan]Fetching {len(All_nodes)} vectors from Qdrant for clustering...[/cyan]")
-                collection_name = getattr(self.config, 'qdrant_collection_name')
-                
-                # 1. We must convert the hash_ids in All_nodes to the UUIDs we used to store them.
                 ids_to_retrieve = [str(uuid.uuid5(uuid.NAMESPACE_DNS, node_id)) for node_id in All_nodes]
-                
-                # 2. The client call must be asynchronous with 'await'.
                 retrieved_points = await self.qdrant_client.retrieve(
-                    collection_name=collection_name,
-                    ids=ids_to_retrieve,
-                    with_vectors=True
+                    collection_name=self.config.qdrant_collection_name,
+                    ids=ids_to_retrieve, with_vectors=True
                 )
-                
-                # 3. We must map the results back correctly. The point.id is the UUID, but its
-                #    payload contains the original hash_id we need.
                 vector_map = {point.payload['hash_id']: point.vector for point in retrieved_points}
                 embedding_list = np.array([vector_map[node_id] for node_id in All_nodes if node_id in vector_map], dtype=np.float32)
-
             else:
-                # LOCAL FILE MODE: Original logic
                 embedding_list = np.array([self.mapper.embeddings[node] for node in All_nodes], dtype=np.float32)
 
             high_level_element_embedding = np.array([he.embedding for he in self.high_level_elements], dtype=np.float32)
             
-            # Ensure we actually got embeddings before trying to stack them
             if embedding_list is not None and embedding_list.size > 0:
                 all_embeddings = np.vstack([high_level_element_embedding, embedding_list])
-
                 kmeans = faiss.Kmeans(d=all_embeddings.shape[1], k=centroids)
                 kmeans.train(all_embeddings.astype(np.float32))
                 _, cluster_labels = kmeans.assign(all_embeddings.astype(np.float32))
@@ -229,53 +297,77 @@ class SummaryGeneration:
                 for i in range(len(self.high_level_elements)):
                     for j in range(len(All_nodes)):
                         if high_level_element_cluster_labels[i] == embedding_cluster_labels[j] and All_nodes[j] in self.high_level_elements[i].related_node:
-                            self.G.add_edge(All_nodes[j], self.high_level_elements[i].hash_id, weight=1)
+                            if self.graph_db_type == 'neo4j':
+                                self.db_session.run("""
+                                    MATCH (source_node {hash_id: $source_id})
+                                    MATCH (he_node:HighLevelElement {hash_id: $he_id})
+                                    MERGE (source_node)-[:RELATED_TO]->(he_node)
+                                """, source_id=All_nodes[j], he_id=self.high_level_elements[i].hash_id)
+                            else: # networkx
+                                self.G.add_edge(All_nodes[j], self.high_level_elements[i].hash_id, weight=1)
                             n += 1
                     self.config.tracker.update()
             else:
-                self.config.console.print("[bold yellow]WARN: No source embeddings found for clustering. Skipping edge creation based on clusters.[/bold yellow]")
-
+                self.config.console.print("[bold yellow]WARN: No source embeddings found for clustering. Skipping edge creation.[/bold yellow]")
         else:
             self.config.tracker.set(len(self.high_level_elements), 'Adding High Level Element Summary')
             for he in self.high_level_elements:
                 for node in he.related_node:
-                    self.G.add_edge(node, he.hash_id, weight=1)
+                    if self.graph_db_type == 'neo4j':
+                         self.db_session.run("""
+                            MATCH (source_node {hash_id: $source_id})
+                            MATCH (he_node:HighLevelElement {hash_id: $he_id})
+                            MERGE (source_node)-[:RELATED_TO]->(he_node)
+                        """, source_id=node, he_id=he.hash_id)
+                    else: # networkx
+                        self.G.add_edge(node, he.hash_id, weight=1)
                     n += 1
                 self.config.tracker.update()
         
         self.config.tracker.close()
         self.config.console.print(f'[bold green]Added {n} edges[/bold green]')
                     
-        
-   
-            
-    
-            
-        
-            
-            
 
-                
-   
     def store_graph(self):
-        storage(self.G).save_pickle(self.config.graph_path)
-        self.config.console.print('[bold green]Graph stored[/bold green]')
+        if self.graph_db_type == 'networkx':
+            if self.G:
+                storage(self.G).save_pickle(self.config.graph_path)
+                self.config.console.print('[bold green]Graph stored[/bold green]')
+        else:
+            # In neo4j mode, updates are live. We just close the connection.
+            if self.driver:
+                self.driver.close()
+            self.config.console.print('Neo4j connection closed by Summary pipeline.')
         
     def delete_community_cache(self):
         os.remove(self.config.summary_path)
+        
         
     def store_high_level_elements(self):
         
         high_level_elements = []
         titles = []
         embedding_list = []
+        
         for high_level_element in self.high_level_elements:
+            # This part needs to query for neighbors if in Neo4j mode
+            related_nodes = []
+            if self.graph_db_type == 'neo4j':
+                records = self.db_session.run(
+                    "MATCH (h:HighLevelElement {hash_id: $id})--(neighbor) RETURN neighbor.hash_id AS neighbor_id",
+                    id=high_level_element.hash_id
+                )
+                related_nodes = [r['neighbor_id'] for r in records]
+            else: # networkx
+                if self.G and self.G.has_node(high_level_element.hash_id):
+                    related_nodes = list(self.G.neighbors(high_level_element.hash_id))
+
             high_level_elements.append({'type':'high_level_element',
                                         'title_hash_id':high_level_element.title_hash_id,
                                         'context':high_level_element.context,
                                         'hash_id':high_level_element.hash_id,
                                         'human_readable_id':high_level_element.human_readable_id,
-                                        'related_nodes':list(self.G.neighbors(high_level_element.hash_id)),
+                                        'related_nodes': related_nodes,
                                         'embedding':'done'})
             
             titles.append({'type':'high_level_element_title',
@@ -285,24 +377,46 @@ class SummaryGeneration:
             
             embedding_list.append({'hash_id':high_level_element.hash_id,
                                    'embedding':high_level_element.embedding})
-        G_high_level_elements = [node for node in self.G.nodes if self.G.nodes[node].get('type') == 'high_level_element']
-        assert len(high_level_elements) == len(G_high_level_elements), f"The number of high level elements is not equal to the number of nodes in the graph. {len(high_level_elements)} != {len(G_high_level_elements)}"
+
+        # The assertion is only safe to run in NetworkX mode
+        if self.graph_db_type == 'networkx' and self.G:
+            G_high_level_elements = [node for node in self.G.nodes if self.G.nodes[node].get('type') == 'high_level_element']
+            assert len(high_level_elements) == len(G_high_level_elements), f"Mismatch in high level element count. List: {len(high_level_elements)} vs Graph: {len(G_high_level_elements)}"
         
-        storage(high_level_elements).save_parquet(self.config.high_level_elements_path,append = os.path.exists(self.config.high_level_elements_path))
-        storage(titles).save_parquet(self.config.high_level_elements_titles_path,append = os.path.exists(self.config.high_level_elements_titles_path))
-        storage(embedding_list).save_parquet(self.config.embedding,append = os.path.exists(self.config.embedding))
+        # This is the key change: Unconditional saving
+        if not self.high_level_elements:
+             self.config.console.print("[yellow]No new high-level elements were generated, but creating empty cache files for consistency.[/yellow]")
+        
+        storage(high_level_elements).save_parquet(self.config.high_level_elements_path, append=os.path.exists(self.config.high_level_elements_path))
+        storage(titles).save_parquet(self.config.high_level_elements_titles_path, append=os.path.exists(self.config.high_level_elements_titles_path))
+        
+        # Only save to the main embedding file if there are new embeddings to add.
+        if embedding_list:
+            storage(embedding_list).save_parquet(self.config.embedding, append=os.path.exists(self.config.embedding))
+        
         self.config.console.print('[bold green]High level elements stored[/bold green]')
+
+
             
     @info_timer(message='Summary Generation Pipeline')        
     async def main(self):
-        if os.path.exists(self.config.graph_path):
-            if os.path.exists(self.config.summary_path):
-                os.remove(self.config.summary_path)
-            await self.generate_high_level_element_summary()
-            await self.high_level_element_summary()
-            self.store_high_level_elements()
-            self.store_graph()
-            self.indices.store_all_indices(self.config.indices_path)
+        # The check for the graph_path is removed. The pipeline now runs in both modes.
+        # It's also safer to check if G_ig was successfully created.
+        if self.G_ig is None and self.graph_db_type == 'networkx':
+            self.config.console.print("[bold red]Graph file could not be loaded. Aborting Summary Generation.[/bold red]")
+            return
+
+        if os.path.exists(self.config.summary_path):
+            os.remove(self.config.summary_path)
+            
+        await self.generate_high_level_element_summary()
+        await self.high_level_element_summary()
+        self.store_high_level_elements() # This now runs unconditionally
+        self.store_graph()
+        self.indices.store_all_indices(self.config.indices_path)
+        
+        # We can make this check safer too
+        if os.path.exists(self.config.summary_path):
             self.delete_community_cache()
             
         

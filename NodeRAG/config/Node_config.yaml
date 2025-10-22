@@ -34,6 +34,15 @@ config:
   qdrant_collection_name: <your_collection_name_here> # Name for the collection in Qdrant
   qdrant_api_key: <your_api_key_here> # leave blank if running locally without authentication
 
+  # --- Graph Database ---
+  graph_db_type: "neo4j" # Change this to 'neo4j' or 'networkx' as needed
+
+  # Neo4j Settings (Comment out if not using Neo4j)
+  neo4j_uri: "<your_uri_here>"
+  neo4j_user: "neo4j"
+  neo4j_password: "<your_instance_password_here>"
+
+
   # Basic Settings
   main_folder: .  # Root folder for document processing
   language: English                  # Document processing language

@@ -23,7 +23,7 @@ from .pipeline import (
 class State(Enum):
     INIT = "INIT"
     DOCUMENT_PIPELINE = "Document pipeline"
-    TEXT_PIPELINE = "Text pipeline" 
+    TEXT_PIPELINE = "Text pipeline"
     GRAPH_PIPELINE = "Graph pipeline"
     ATTRIBUTE_PIPELINE = "Attribute pipeline"
     EMBEDDING_PIPELINE = "Embedding pipeline"
@@ -49,6 +49,10 @@ class NodeRag():
         self._hash_ids = None
         self.observers = []
         self.web_ui = web_ui
+        
+        # 1. Read the graph database type from the config, defaulting to 'networkx'.
+        self.graph_db_type = getattr(self.config, 'graph_db_type', 'networkx')
+        self.console.print(f"[bold cyan]Graph database backend set to: [bold yellow]{self.graph_db_type}[/bold yellow][/bold cyan]")
 
         self.state_pipeline_map = {
             State.DOCUMENT_PIPELINE: document_pipline,
@@ -71,7 +75,7 @@ class NodeRag():
             State.EMBEDDING_PIPELINE, # This pipeline now also handles insertion for Qdrant
             State.SUMMARY_PIPELINE,
             State.INSERT_TEXT,
-            State.HNSW_PIPELINE,      
+            State.HNSW_PIPELINE,
             State.FINISHED
         ]
 
@@ -153,8 +157,20 @@ class NodeRag():
                         self.config.whole_time()
                         return
 
+                # 2. Conditionally instantiate the pipeline based on the current state.
+                
+                pipeline_class = self.state_pipeline_map[self.Current_state]
+                
+                if self.Current_state == State.GRAPH_PIPELINE:
+                    # If it's the graph pipeline, pass the db_type parameter
+                    pipeline_instance = pipeline_class(self.config, db_type=self.graph_db_type)
+                else:
+                    # For all other pipelines, instantiate them normally
+                    pipeline_instance = pipeline_class(self.config)
+
                 self.config.console.print(f"[bold green]Processing {self.Current_state.value} pipeline...[/bold green]")
-                await self.state_pipeline_map[self.Current_state](self.config).main()
+                await pipeline_instance.main()
+
                 self.config.console.print(f"[bold green]Processing {self.Current_state.value} pipeline finished.[/bold green]")
         
         except Exception as e:
@@ -230,7 +246,12 @@ class NodeRag():
             self.console.print("[bold red]Error logged. Rerun the pipeline from the current state.[/bold red]")
         
             try:
-                await self.state_pipeline_map[self.Current_state](self.config).main()
+                pipeline_class = self.state_pipeline_map[self.Current_state]
+                if self.Current_state == State.GRAPH_PIPELINE:
+                    pipeline_instance = pipeline_class(self.config, db_type=self.graph_db_type)
+                else:
+                    pipeline_instance = pipeline_class(self.config)
+                await pipeline_instance.main()
         
             except Exception as e:
                 self.store_state()
@@ -242,6 +263,7 @@ class NodeRag():
             self.console.print("[bold red]Error cached. Rerun the pipeline from the current state.[/bold red]")
         
             try:
+                # This assumes rerun() doesn't need the db_type, if it does, add logic here too.
                 await self.state_pipeline_map[self.Current_state](self.config).rerun()
         
             except Exception as e:

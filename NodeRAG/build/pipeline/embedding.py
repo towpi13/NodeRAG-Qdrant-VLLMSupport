@@ -35,7 +35,8 @@ class Embedding_pipeline():
 
             self.qdrant_client = AsyncQdrantClient(
                 url=qdrant_url, 
-                api_key=getattr(self.config, 'qdrant_api_key', None)
+                api_key=getattr(self.config, 'qdrant_api_key', None),
+                timeout=30.0 
             )
         else:
             # Add a log to be 100% sure we are in the correct mode
