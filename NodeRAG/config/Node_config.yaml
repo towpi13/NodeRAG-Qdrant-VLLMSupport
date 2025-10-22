@@ -2,51 +2,60 @@
 # AI Model Configuration
 #==============================================================================
 model_config:
-  service_provider: openai            # AI service provider (e.g., openai, gemini)
-  model_name: gpt-4o-mini            # Model name for text generation
-  api_keys: ~  # Your API key (optional)
+  service_provider: gemini            # AI service provider (e.g., openai, gemini)
+  model_name: gemini-2.5-flash           # Model name for text generation
+  api_keys:  <your_api_key_here>
   temperature: 0                # Temperature parameter for text generation
   max_tokens: 10000                  # Maximum tokens to generate
-  rate_limit: 40                      # API rate limit (requests per second)
+  rate_limit: 10                     # API rate limit (requests per second)
 
 embedding_config:
-  service_provider: openai_embedding  # Embedding service provider
-  embedding_model_name: text-embedding-3-small  # Model name for text embeddings
-  api_keys: ~  # Your API key (optional)
-  rate_limit: 20                      # Rate limit for embedding requests
+  service_provider: gemini_embedding  # Embedding service provider
+  model_name: gemini-embedding-001  # Model name for text embeddings
+  api_keys:   <your_api_key_here>
+  rate_limit: 10                      # Rate limit for embedding requests
 
+# Sample configuration for using VLLM for embeddings
+# embedding_config:
+#   service_provider: vllm
+#   model_name: Qwen/Qwen3-Embedding-0.6B              
+#   base_url: http://localhost:8000
+#   api_keys:
+#   rate_limit: 25
 
 #==============================================================================
 # Document Processing Configuration
 #==============================================================================
 config:
+  vector_store: qdrant # Use 'qdrant' to activate. To switch back to HNSW, change to 'hnsw' or remove this line.
+
+  # Qdrant Settings (Comment these out if not using Qdrant)
+  qdrant_url: <your_qdrant_url_here>  # URL of your running Qdrant instance
+  qdrant_collection_name: <your_collection_name_here> # Name for the collection in Qdrant
+  qdrant_api_key: <your_api_key_here> # leave blank if running locally without authentication
+
   # Basic Settings
-  main_folder: ~  # Root folder for document processing
+  main_folder: .  # Root folder for document processing
   language: English                  # Document processing language
   docu_type: mixed                   # Document type (mixed, pdf, txt, etc.)
-  
   # Chunking Settings
   chunk_size: 1048                   # Size of text chunks for processing
   embedding_batch_size: 50           # Batch size for embedding processing
-  
   # UI Settings
-  use_tqdm: False                    # Enable/disable progress bars
-  use_rich: True                     # Enable/disable rich text formatting
-  
+  use_tqdm: true                    # Enable/disable progress bars
+  use_rich: true                     # Enable/disable rich text formatting
   # HNSW Index Settings
   space: l2                         # Distance metric for HNSW (l2, cosine)
-  dim: 1536                         # Embedding dimension (must match embedding model)
+  dim: 3072                         # Embedding dimension (must match embedding model)
   m: 50                             # Number of connections per layer in HNSW
   ef: 200                           # Size of dynamic candidate list in HNSW
-  m0: ~                             # Number of bi-directional links in HNSW
-  
+  m0:                               # Number of bi-directional links in HNSW
   # Summary Settings
   Hcluster_size: 39                  # Number of clusters for high-level element matching
-  
   # Search Server Settings
   url: '127.0.0.1'                  # Server URL for search service
   port: 5000                        # Server port number
-  unbalance_adjust: True            # Enable adjustment for unbalanced data
+  unbalance_adjust: true            # Enable adjustment for unbalanced data
   cross_node: 10                    # Number of cross nodes to return
   Enode: 10                         # Number of entity nodes to return
   Rnode: 30                         # Number of relationship nodes to return

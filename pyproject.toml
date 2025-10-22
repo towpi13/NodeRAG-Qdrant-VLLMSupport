@@ -1,6 +1,6 @@
 [project]
 name = "NodeRAG"
-version = "0.1.0"
+version = "0.2.0"
 description = "NodeRAG, a graph-centric framework introducing heterogeneous graph structures that enable the seamless and holistic integration of graph-based methodologies into the RAG workflow"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -76,6 +76,7 @@ dependencies = [
     "pytz==2025.1",
     "pyvis==0.3.2",
     "pyyaml==6.0.2",
+    "qdrant-client>=1.12.1",
     "referencing==0.36.2",
     "regex==2024.11.6",
     "requests==2.32.3",

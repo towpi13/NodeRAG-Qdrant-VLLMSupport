@@ -36,15 +36,27 @@ class NodeImportance:
                 self.important_nodes.append(nodes)
         
     def avarege_degree(self):
-        average_degree = sum(dict(self.G.degree()).values())/self.G.number_of_nodes()
+        import traceback
+        try:
+            average_degree = sum(dict(self.G.degree()).values())/self.G.number_of_nodes()
+        except Exception as e:
+            self.console.print('[bold red]Error calculating average degree:[/bold red]', e)
+            self.console.print(traceback.format_exc())
+            average_degree = 0
         return average_degree
     
     def defult_k(self):
-        k = round(np.log(self.G.number_of_nodes())*self.avarege_degree()**(1/2))
+        import traceback
+        try:
+            k = round(np.log(self.G.number_of_nodes())*self.avarege_degree()**(1/2))
+        except Exception as e:
+            self.console.print('[bold red]Error calculating default k:[/bold red]', e)
+            self.console.print(traceback.format_exc())
+            k = 0
         return k
     
     def betweenness_centrality(self):
-        
+        print("-----Number of Nodes-----", self.G.number_of_nodes())
         self.betweenness = nx.betweenness_centrality(self.G,k=10)
         average_betweenness = sum(self.betweenness.values())/len(self.betweenness)
         scale = round(math.log10(len(self.betweenness)))

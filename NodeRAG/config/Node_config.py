@@ -53,6 +53,11 @@ class NodeConfig():
         if self.main_folder is None:
             raise ValueError('main_folder is not set')
         
+        self.vector_store = self.config.get('vector_store', 'hnsw') # Default to 'hnsw' if missing
+        self.qdrant_url = self.config.get('qdrant_url', None)
+        self.qdrant_collection_name = self.config.get('qdrant_collection_name', None)
+        self.qdrant_api_key = self.config.get('qdrant_api_key', None)
+        
         if not os.path.exists(self.main_folder):
             raise ValueError(f'main_folder {self.main_folder} does not exist')
         
@@ -130,10 +135,13 @@ class NodeConfig():
         except:
             self.API_client = None
         
+        import traceback
         try:
             self.embedding_client = set_embedding_client(API_client(self.embedding_config))
-        except:
-            self.embedding_client = None
+        except Exception as e:
+            self.console.print('[bold red]Error Sembedding lcient:[/bold red]', e)
+            self.console.print(traceback.format_exc())
+            
             
         try:
 

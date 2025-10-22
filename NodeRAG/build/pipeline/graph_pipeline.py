@@ -1,3 +1,4 @@
+from urllib import response
 import networkx as nx
 from typing import List,Dict
 import json
@@ -67,7 +68,13 @@ class Graph_pipeline:
         return [],{}
     
     async def build_graph(self):
+        # -- ADD THIS LINE FOR DEBUGGING --
+        self.console.print(f"[bold yellow]DEBUG: Found {len(self.data)} items to process.[/bold yellow]")
         
+        if not self.data:
+            self.console.print("[bold red]DEBUG: No new data found to build the graph. Aborting graph build.[/bold red]")
+            return # Exit early if there's nothing to do
+
         self.config.tracker.set(len(self.data),desc="Building graph")
         tasks = []
         
@@ -80,22 +87,33 @@ class Graph_pipeline:
         text_hash_id = data.get('text_hash_id')
         response = data.get('response')
 
-        if isinstance(response,dict):   
-            Output = response.get('Output')
+        # FIX: Check if the response is a list and iterate over it directly.
+        if isinstance(response, list):   
             
-            for output in Output:
+            # The 'response' list is the 'Output' we were looking for.
+            for output in response:
                 semantic_unit = output.get('semantic_unit')
                 entities = output.get('entities')
                 relationships = output.get('relationships')
                 
+                # Add a check to ensure the chunk is valid before processing
+                if not all([semantic_unit, entities, relationships is not None]):
+                    self.console.print(f"[bold yellow]WARN: Skipping malformed data chunk in {text_hash_id}[/bold yellow]")
+                    continue
+
                 semantic_unit_hash_id = self.add_semantic_unit(semantic_unit,text_hash_id)
                 entities_hash_id = self.add_entities(entities,text_hash_id)
         
                 entities_hash_id_re = await self.add_relationships(relationships,text_hash_id)
                 entities_hash_id.extend(entities_hash_id_re)
                 self.add_semantic_belongings(semantic_unit_hash_id,entities_hash_id)
+            
             data['processed'] = True
             self.config.tracker.update()
+        
+        else:
+            # This part is useful if the data format is inconsistent.
+            self.console.print(f"[bold red]ERROR: 'response' for {text_hash_id} is not a list. Type is {type(response)}. Skipping.[/bold red]")
         
         
     def save_data(self):
@@ -142,43 +160,55 @@ class Graph_pipeline:
             else:
                 self.G.add_edge(semantic_unit_hash_id,entity_hash_id,weight = 1)
             
-    async def add_relationships(self,relationships:List[str],text_hash_id:str):
-        
-        entities_hash_id = []
-        for relationship in relationships:
-            
-            relationship = relationship.split(',')
-            relationship = [i.strip() for i in relationship]
-            
-            if len(relationship) != 3:
-                relationship = await self.reconstruct_relationship(relationship)
-            
-            relationship = Relationship(relationship,text_hash_id)
-            hash_id = relationship.hash_id
-            if hash_id in self.relationship_lookup:
-                Re = self.relationship_lookup[hash_id]
-                Re.add(relationship.raw_context)
-                continue
-            
-            
-            self.relationship.append(relationship)
-            self.relationship_lookup[hash_id] = relationship
-            
-            
-            for node in [relationship.source, relationship.target, relationship]:
-                if not self.G.has_node(node.hash_id):
-                    self.G.add_node(node.hash_id, type='entity' if node in [relationship.source, relationship.target] else 'relationship', weight=1)
-                    if node in [relationship.source, relationship.target]:
-                        self.relationship_nodes.append(node)
-                        entities_hash_id.append(node.hash_id)
-                    
 
-            for edge in [(relationship.source.hash_id, relationship.hash_id), (relationship.hash_id, relationship.target.hash_id)]:
-                if not self.G.has_edge(*edge):
-                    self.G.add_edge(*edge, weight=1)
+    async def add_relationships(self, relationships: List[str], text_hash_id: str):
+            
+            entities_hash_id = []
+            
+            # --- STAGE 1: PARSE AND COLLECT ALL RELATIONSHIPS ---
+            relationships_to_process = []
+            for rel_string in relationships:
+                relationship_parts = [part.strip() for part in rel_string.split(',')]
+                
+                if len(relationship_parts) == 3 and all(relationship_parts):
+                    # This relationship is already well-formed
+                    relationships_to_process.append(relationship_parts)
                 else:
-                    self.G[edge[0]][edge[1]]['weight'] += 1
-        return entities_hash_id
+                    # This one needs reconstruction. It might return multiple relationships.
+                    reconstructed_rels = await self.reconstruct_relationship(relationship_parts)
+                    # Use .extend() to add all the found relationships to our list
+                    relationships_to_process.extend(reconstructed_rels)
+
+            # --- STAGE 2: PROCESS THE CLEANED LIST OF RELATIONSHIPS ---
+            for relationship_parts in relationships_to_process:
+                
+                # The Relationship class expects a list of three strings.
+                sanitized_relationship = [str(p) for p in relationship_parts]
+                relationship_obj = Relationship(sanitized_relationship, text_hash_id)
+                hash_id = relationship_obj.hash_id
+                
+                if hash_id in self.relationship_lookup:
+                    Re = self.relationship_lookup[hash_id]
+                    Re.add(relationship_obj.raw_context)
+                    continue
+                
+                self.relationship.append(relationship_obj)
+                self.relationship_lookup[hash_id] = relationship_obj
+                
+                for node in [relationship_obj.source, relationship_obj.target, relationship_obj]:
+                    if not self.G.has_node(node.hash_id):
+                        self.G.add_node(node.hash_id, type='entity' if node in [relationship_obj.source, relationship_obj.target] else 'relationship', weight=1)
+                        if node in [relationship_obj.source, relationship_obj.target]:
+                            self.relationship_nodes.append(node)
+                            entities_hash_id.append(node.hash_id)
+                        
+                for edge in [(relationship_obj.source.hash_id, relationship_obj.hash_id), (relationship_obj.hash_id, relationship_obj.target.hash_id)]:
+                    if not self.G.has_edge(*edge):
+                        self.G.add_edge(*edge, weight=1)
+                    else:
+                        self.G[edge[0]][edge[1]]['weight'] += 1
+                        
+            return entities_hash_id
                 
     async def reconstruct_relationship(self,relationship:List[str])->List[str]:
         
@@ -186,7 +216,40 @@ class Graph_pipeline:
         json_format = self.prompt_manager.relationship_reconstraction_json
         input_data = {'query':query,'response_format':json_format}
         response = await self.API_request(input_data)
-        return [response.get('source'),response.get('relationship'),response.get('target')]
+        
+        # Handles the expected response of a single JSON object
+        if isinstance(response, dict):
+            # The key might be 'relation' or 'relationship'
+            relation = response.get('relationship') or response.get('relation')
+            return [response.get('source'), relation, response.get('target')]
+        
+        # --- START OF FIX ---
+        # Handles the error case where the API returns a list containing the relationship object(s)
+        if isinstance(response, list) and response and isinstance(response[0], dict):
+            # Process the first valid relationship found in the list
+            first_rel_obj = response[0]
+            
+            # Use 'get' for safe access and check for both 'relation' and 'relationship' keys
+            relation = first_rel_obj.get('relationship') or first_rel_obj.get('relation')
+            source = first_rel_obj.get('source')
+            target = first_rel_obj.get('target')
+            
+            # If the API returns multiple relationships in the list, warn the user and process only the first one.
+            if len(response) > 1:
+                self.console.print(f"[bold yellow]WARN: Multiple relationships found in a single reconstruction response. Processing only the first one: {response}[/bold yellow]")
+
+            return [source, relation, target]
+        # --- END OF FIX ---
+            
+        # Handles case where API returns a simple list of 3 string elements
+        elif isinstance(response, list) and len(response) == 3:
+            return response
+            
+        # Fallback for any other unexpected format to prevent a crash
+        else:
+            self.console.print(f"[bold red]ERROR: Could not reconstruct relationship. Unexpected format from API: {response}[/bold red]")
+            # Return a list with None values to signal failure, which is easier to check for.
+            return [None, None, None]
                 
             
            

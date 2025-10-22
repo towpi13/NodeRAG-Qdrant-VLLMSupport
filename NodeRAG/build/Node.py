@@ -43,39 +43,53 @@ class NodeRag():
         self.Is_incremental=False
         self.config=config
         self.console = self.config.console
+        print("Debug for embedding client", config.embedding_client)
         self.config.config_integrity()
         self._documents = None
         self._hash_ids = None
         self.observers = []
         self.web_ui = web_ui
 
-
-
-        # define the state to pipeline mapping
+        # Define the state to pipeline mapping (this remains unchanged)
         self.state_pipeline_map = {
             State.DOCUMENT_PIPELINE: document_pipline,
             State.TEXT_PIPELINE: text_pipline,
             State.GRAPH_PIPELINE: Graph_pipeline,
             State.ATTRIBUTE_PIPELINE: Attribution_generation_pipeline,
-            State.EMBEDDING_PIPELINE: Embedding_pipeline,
+            State.EMBEDDING_PIPELINE: Embedding_pipeline, # This class now has the Qdrant logic
             State.SUMMARY_PIPELINE: SummaryGeneration,
             State.INSERT_TEXT: Insert_text,
             State.HNSW_PIPELINE: HNSW_pipeline
         }
         
-        # define the state sequence
-        self.state_sequence = [
+        # --- MODIFIED: DYNAMICALLY SET THE STATE SEQUENCE ---
+
+        # Define the default full state sequence
+        base_state_sequence = [
             State.INIT,
             State.DOCUMENT_PIPELINE,
             State.TEXT_PIPELINE,
             State.GRAPH_PIPELINE,
             State.ATTRIBUTE_PIPELINE,
-            State.EMBEDDING_PIPELINE,
+            State.EMBEDDING_PIPELINE, # This pipeline now also handles insertion for Qdrant
             State.SUMMARY_PIPELINE,
             State.INSERT_TEXT,
-            State.HNSW_PIPELINE,
+            State.HNSW_PIPELINE,      # This step will be conditionally removed
             State.FINISHED
         ]
+
+        # Check the config to decide which vector store to use
+        # getattr is used for safety in case 'vector_store' is not defined in the config
+        if getattr(self.config, 'vector_store', None) == 'qdrant':
+            # If using Qdrant, remove the HNSW step from the sequence.
+            # The Embedding_pipeline now handles vector storage directly.
+            self.console.print("[bold cyan]🚀 Qdrant vector store enabled. The local HNSW pipeline will be skipped.[/bold cyan]")
+            base_state_sequence.remove(State.HNSW_PIPELINE)
+            self.state_sequence = base_state_sequence
+        else:
+            # Otherwise, use the default sequence which includes building the local HNSW index.
+            self.console.print("[bold cyan]📦 Local HNSW vector store enabled.[/bold cyan]")
+            self.state_sequence = base_state_sequence
         
     @property
     def state_dict(self):

@@ -121,5 +121,3 @@ NodeRAG offers a user-friendly visualization system. Coupled with a fully develo
 </div>
 
 *Optimized for speed and scalability, NodeRAG achieves fast indexing and query response times even on large datasets.*
-
-

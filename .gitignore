@@ -1,8 +1,16 @@
+# Python-generated files
 __pycache__/
-*.py[cod]
-*$py.class
-*.log
-.venv/
-*.egg-info/
+*.py[oc]
 dist/
-lib/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+Node_config.yaml
+uv.lock
+.python-version
+error.log
+cache
+info

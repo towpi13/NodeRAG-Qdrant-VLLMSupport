@@ -17,7 +17,7 @@ def LLM_route(config : ModelConfig) -> LLM:
 
     service_provider = config.get("service_provider")
     model_name = config.get("model_name")
-    embedding_model_name = config.get("embedding_model_name",None)
+    embedding_model_name = config.get("model_name",None)
     api_keys = config.get("api_keys",None)
         
     match service_provider:
@@ -29,8 +29,16 @@ def LLM_route(config : ModelConfig) -> LLM:
             return Gemini(model_name, api_keys, config)
         case "gemini_embedding":
             return Gemini_Embedding(embedding_model_name, api_keys, config)
+        case "vllm":
+            if not embedding_model_name:
+                raise ValueError("For 'vllm' provider, the 'embedding_model_name' must be set to the service URL.")
+            # The 'embedding_model_name' is used as the URL.
+            # The 'api_keys' argument is ignored but passed for consistency.
+            # The 'config' dict is passed to get the actual model name for the payload.
+            return VLLM_Embedding(embedding_model_name, api_keys, config)
+            
         case _:
-            raise ValueError("Service provider not supported")
+            raise ValueError(f"Service provider '{service_provider}' not supported")
    
             
 

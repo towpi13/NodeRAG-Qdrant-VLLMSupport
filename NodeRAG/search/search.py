@@ -105,9 +105,32 @@ class NodeSearch():
 
     def decompose_query(self,query:str):
         
-        query = self.config.prompt_manager.decompose_query.format(query=query)
-        response = self.config.API_client.request({'query':query,'response_format':self.config.prompt_manager.decomposed_text_json})
-        return response['elements']
+        prompt = self.config.prompt_manager.decompose_query.format(query=query)
+        response = self.config.API_client.request({'query':prompt,'response_format':self.config.prompt_manager.decomposed_text_json})
+        
+        # --- START OF MODIFICATION ---
+
+        # Case 1: The response is the expected dictionary format -> {'elements': [...]}
+        if isinstance(response, dict):
+            # Use .get() for safe access in case the 'elements' key is missing
+            return response.get('elements', [])
+
+        # Case 2: The response is a list containing the dictionary -> [{'elements': [...]}]
+        # This checks if it's a non-empty list and the first item is a dictionary
+        if isinstance(response, list) and response and isinstance(response[0], dict):
+            return response[0].get('elements', [])
+
+        # Case 3: The response is just the list of elements directly -> [...]
+        # This is the most likely cause of your error.
+        if isinstance(response, list):
+            return response
+
+        # Fallback: If the response is in an unknown format, log a warning and return an empty list
+        # to prevent the program from crashing.
+        print(f"WARN: Unexpected format from API in decompose_query. Response: {response}")
+        return []
+        
+        # --- END OF MODIFICATION ---
     
     
     def accurate_search(self, entities: List[str]) -> List[str]:
