@@ -33,11 +33,9 @@ class SummaryGeneration:
         self.indices = self.config.indices
         self.communities = []
         self.high_level_elements = []
-        self.qdrant_client = None # Will hold the Qdrant client if enabled
+        self.qdrant_client = None 
 
         if os.path.exists(self.config.graph_path):
-            
-            # This part is common for both modes
             self.mapper = Mapper([self.config.semantic_units_path,
                                     self.config.attributes_path])
             self.G = storage.load(self.config.graph_path)
@@ -45,36 +43,25 @@ class SummaryGeneration:
             self.nodes_high_level_elements_group = []
             self.nodes_high_level_elements_match = []
 
-            # --- START OF THE FIX: CONDITIONAL LOGIC FOR EMBEDDINGS ---
             if getattr(self.config, 'vector_store', None) == 'qdrant':
-                # QDRANT MODE: Initialize a client to fetch embeddings later.
                 self.config.console.print("[bold cyan]Summary pipeline is in Qdrant mode. Will fetch embeddings from the server.[/bold cyan]")
-                # THE FIX: Use the correct AsyncQdrantClient
                 self.qdrant_client = AsyncQdrantClient(
                     url=getattr(self.config, 'qdrant_url'),
                     api_key=getattr(self.config, 'qdrant_api_key', None)
                 )
             else:
-                # LOCAL FILE MODE: The original logic. This will now only run if Qdrant is disabled.
                 self.config.console.print("[bold cyan]Summary pipeline is in local file mode. Loading embeddings from disk.[/bold cyan]")
-                # We check if the embedding file exists before trying to load it.
                 if os.path.exists(self.config.embedding):
                     self.mapper.add_embedding(self.config.embedding)
                 else:
                     self.config.console.print(f"[bold red]ERROR: Local embedding file not found at {self.config.embedding}. Summary generation may fail.[/bold red]")
 
             
-
-    
     def partition(self):
         
         partition = la.find_partition(self.G_ig,la.ModularityVertexPartition)
         
         for i,community in enumerate(partition):
-            # --- MODIFIED: More robust check for nodes that should have embeddings ---
-            # Instead of checking if the node is in the embedding dictionary,
-            # we check if it exists in the mapper's source data (semantic_units/attributes).
-            # This is true in both local and Qdrant mode.
             community_name = [self.G_ig.vs[node]['name'] for node in community if self.G_ig.vs[node]['name'] in self.mapper.mapping]
             
             self.communities.append(Community_summary(community_name,self.mapper,self.G,self.config))
@@ -158,7 +145,6 @@ class SummaryGeneration:
 
             # Safety Check 2: The 'response' must be a list to proceed.
             if isinstance(response_data, list):
-                # THE FIX: Iterate directly over 'response_data', which is the list of summaries.
                 for high_level_element in response_data:
                     
                     # Safety Check 3: Ensure each item in the list is a dictionary with the keys we need.
@@ -207,7 +193,6 @@ class SummaryGeneration:
                 self.config.console.print(f"[cyan]Fetching {len(All_nodes)} vectors from Qdrant for clustering...[/cyan]")
                 collection_name = getattr(self.config, 'qdrant_collection_name')
                 
-                # --- START OF THE FIX ---
                 # 1. We must convert the hash_ids in All_nodes to the UUIDs we used to store them.
                 ids_to_retrieve = [str(uuid.uuid5(uuid.NAMESPACE_DNS, node_id)) for node_id in All_nodes]
                 
@@ -222,7 +207,6 @@ class SummaryGeneration:
                 #    payload contains the original hash_id we need.
                 vector_map = {point.payload['hash_id']: point.vector for point in retrieved_points}
                 embedding_list = np.array([vector_map[node_id] for node_id in All_nodes if node_id in vector_map], dtype=np.float32)
-                # --- END OF THE FIX ---
 
             else:
                 # LOCAL FILE MODE: Original logic

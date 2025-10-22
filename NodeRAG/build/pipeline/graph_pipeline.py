@@ -87,7 +87,6 @@ class Graph_pipeline:
         text_hash_id = data.get('text_hash_id')
         response = data.get('response')
 
-        # FIX: Check if the response is a list and iterate over it directly.
         if isinstance(response, list):   
             
             # The 'response' list is the 'Output' we were looking for.
@@ -223,7 +222,6 @@ class Graph_pipeline:
             relation = response.get('relationship') or response.get('relation')
             return [response.get('source'), relation, response.get('target')]
         
-        # --- START OF FIX ---
         # Handles the error case where the API returns a list containing the relationship object(s)
         if isinstance(response, list) and response and isinstance(response[0], dict):
             # Process the first valid relationship found in the list
@@ -239,7 +237,6 @@ class Graph_pipeline:
                 self.console.print(f"[bold yellow]WARN: Multiple relationships found in a single reconstruction response. Processing only the first one: {response}[/bold yellow]")
 
             return [source, relation, target]
-        # --- END OF FIX ---
             
         # Handles case where API returns a simple list of 3 string elements
         elif isinstance(response, list) and len(response) == 3:

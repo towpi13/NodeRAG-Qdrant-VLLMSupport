@@ -50,7 +50,6 @@ class NodeRag():
         self.observers = []
         self.web_ui = web_ui
 
-        # Define the state to pipeline mapping (this remains unchanged)
         self.state_pipeline_map = {
             State.DOCUMENT_PIPELINE: document_pipline,
             State.TEXT_PIPELINE: text_pipline,
@@ -62,8 +61,6 @@ class NodeRag():
             State.HNSW_PIPELINE: HNSW_pipeline
         }
         
-        # --- MODIFIED: DYNAMICALLY SET THE STATE SEQUENCE ---
-
         # Define the default full state sequence
         base_state_sequence = [
             State.INIT,
@@ -74,7 +71,7 @@ class NodeRag():
             State.EMBEDDING_PIPELINE, # This pipeline now also handles insertion for Qdrant
             State.SUMMARY_PIPELINE,
             State.INSERT_TEXT,
-            State.HNSW_PIPELINE,      # This step will be conditionally removed
+            State.HNSW_PIPELINE,      
             State.FINISHED
         ]
 

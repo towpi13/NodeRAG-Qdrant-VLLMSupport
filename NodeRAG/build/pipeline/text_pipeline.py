@@ -77,9 +77,7 @@ class text_pipline():
                         meta_data:Dict) -> None:
         
         response = await self.config.client(input_data,cache_path=self.config.LLM_error_cache,meta_data = meta_data)
-        
-        # --- START OF MODIFICATION ---
-        
+                
         # Validate the structure of the LLM response before saving
         if self.validate_llm_response(response):
             # If the format is correct, save it to the main decomposition file
@@ -99,9 +97,7 @@ class text_pipline():
             }
             with open(self.config.LLM_error_cache, 'a', encoding='utf-8') as f:
                 await f.write(json.dumps(error_payload) + '\n')
-                
-        # --- END OF MODIFICATION ---
-        
+                        
         self.config.tracker.update()
         
     def check_error_cache(self) -> None:

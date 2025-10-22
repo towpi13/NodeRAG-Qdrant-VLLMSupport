@@ -101,8 +101,6 @@ class Embedding_pipeline():
         embedding_input = list(context_dict.values())
         ids = list(context_dict.keys())
         
-        # --- START OF THE FIX ---
-
         # Step 1: Call the embedding client
         embedding_output = await self.embedding_client(embedding_input, cache_path=self.config.LLM_error_cache, meta_data={'ids': ids})
         
@@ -140,8 +138,6 @@ class Embedding_pipeline():
         
         # This will now only be called if there are valid embeddings
         self.config.tracker.update()
-        # --- END OF THE FIX ---
-
     
     
     def delete_embedding_cache(self):
@@ -149,7 +145,6 @@ class Embedding_pipeline():
         if os.path.exists(self.config.embedding_cache):
             os.remove(self.config.embedding_cache)
     
-            
             
     async def generate_embeddings(self):
         tasks = []
@@ -189,14 +184,9 @@ class Embedding_pipeline():
 
         # Step 4: Conditional Storage Logic - Save to the correct destination.
         if self.qdrant_client:
-            # --- QDRANT LOGIC ---
             self.config.console.print(f"[cyan]Saving {len(lines)} embeddings to Qdrant...[/cyan]")
             collection_name = getattr(self.config, 'qdrant_collection_name')
-            
-            # =================================================================
-            # START: THIS IS THE FINAL ENHANCEMENT
-            # =================================================================
-            # We will now build a richer payload by getting the original context from the mapper.
+
             points_to_upsert = []
             for item in lines:
                 # Get all data associated with this hash_id from our mapper
@@ -217,15 +207,11 @@ class Embedding_pipeline():
                         payload=payload
                     )
                 )
-            # =================================================================
-            # END: THIS IS THE FINAL ENHANCEMENT
-            # =================================================================
             
             await self.qdrant_client.upsert(collection_name=collection_name, points=points_to_upsert, wait=True)
             self.config.console.print(f"[bold green]Successfully saved {len(lines)} embeddings to Qdrant.[/bold green]")
         
         else:
-            # --- LOCAL FILE (HNSW) LOGIC ---
             self.config.console.print(f"[cyan]Saving {len(lines)} embeddings to local Parquet file: '{self.config.embedding}'...[/cyan]")
             storage(lines).save_parquet(self.config.embedding, append=os.path.exists(self.config.embedding))
             self.config.console.print(f"[bold green]Successfully saved embeddings to Parquet file.[/bold green]")
@@ -234,10 +220,7 @@ class Embedding_pipeline():
         self.mapper.update_save()
                 
 
-    def insert_embeddings(self):
-        
-        # --- START OF FIX: Make this function more robust and transparent ---
-        
+    def insert_embeddings(self):        
         # Check 1: Does the temporary cache file from the previous step even exist?
         if not os.path.exists(self.config.embedding_cache):
             self.config.console.print("[bold yellow]WARN: Embedding cache file not found. Skipping insertion. No embedding.parquet will be created.[/bold yellow]")
@@ -333,12 +316,9 @@ class Embedding_pipeline():
             
     @info_timer(message='Embedding Pipeline')
     async def main(self):
-        # --- THIS IS THE CRITICAL CHANGE ---
-        # Run the idempotent setup check at the very beginning of the pipeline execution.
         if self.qdrant_client:
             await self._ensure_qdrant_collection_exists_async()
             
-        # The rest of the pipeline logic remains unchanged.
         # It will only run if there are new embeddings to generate or cache to process.
         self.check_embedding_cache()
         await self.generate_embeddings()

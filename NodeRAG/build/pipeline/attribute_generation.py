@@ -56,7 +56,6 @@ class NodeImportance:
         return k
     
     def betweenness_centrality(self):
-        print("-----Number of Nodes-----", self.G.number_of_nodes())
         self.betweenness = nx.betweenness_centrality(self.G,k=10)
         average_betweenness = sum(self.betweenness.values())/len(self.betweenness)
         scale = round(math.log10(len(self.betweenness)))
