@@ -21,6 +21,10 @@ class document_pipline():
         
         
     def integrity_check(self):
+        # If local caching is disabled, skip all integrity checks and cache deletions.
+        if not self.config.use_local_cache:
+            return
+
         if not os.path.exists(self.config.cache):
             os.makedirs(self.config.cache)
         elif self.cache_completion_check():
@@ -56,6 +60,12 @@ class document_pipline():
     
     
     def store_documents_data(self):
+        # If local caching is disabled, print a message and skip saving the file.
+        if not self.config.use_local_cache:
+            self.config.console.print("[cyan]Local cache disabled. Skipping creation of documents.parquet.[/cyan]")
+            return
+
+        # Original logic for when caching is enabled
         doc_list = []
         for doc in self.documents:
             doc_list.append({'doc_id':doc.human_readable_id,
@@ -73,17 +83,23 @@ class document_pipline():
         for doc in self.documents:
             doc.split()
             for text in doc.text_units:
-                text_list.append({'text_id':text.human_readable_id,
-                                'hash_id':text.hash_id,
-                                'type':'text',
-                                'context':text.raw_context,
-                                'doc_id':doc.human_readable_id,
-                                'doc_hash_id':doc.hash_id,
-                                'embedding':None,})
+                # This logic is unchanged
+                text_list.append({'text_id':text.human_readable_id, 'hash_id':text.hash_id,
+                                'type':'text', 'context':text.raw_context, 'doc_id':doc.human_readable_id,
+                                'doc_hash_id':doc.hash_id, 'embedding':None,})
             self.config.tracker.update()
         self.config.tracker.close()
-        storage(text_list).save_parquet(self.config.text_path,append= os.path.exists(self.config.text_path))
-        self.config.console.print('[green]Texts stored[/green]')
+
+        # The file-saving part is already correctly conditional
+        if self.config.use_local_cache:
+            storage(text_list).save_parquet(self.config.text_path,append= os.path.exists(self.config.text_path))
+            self.config.console.print('[green]Texts stored[/green]')
+        else:
+            self.config.console.print("[cyan]Local cache disabled. Skipping creation of text.parquet.[/cyan]")
+        
+        # --- NEW ---
+        # Return the generated list so the orchestrator can pass it to the next pipeline.
+        return text_list
         
     def store_readable_index(self) -> None:
         
@@ -100,6 +116,15 @@ class document_pipline():
         self.config.console.print('[red]There exist incomplete cache,deleted[/red]')
         
     def increment_doc(self) -> None:
+        # If local caching is disabled, we process all documents.
+        # Idempotency is handled by the databases (Neo4j MERGE, Qdrant upsert).
+        if not self.config.use_local_cache:
+            self._documents = self.documents
+            self.documents_path = [doc.path for doc in self.documents]
+            self._hash_ids = None
+            return
+
+        # Original logic for when caching is enabled
         if os.path.exists(self.config.documents_path):
             exist_doc_id = storage.load_parquet(self.config.documents_path)['doc_hash_id'].tolist()
             increment_doc_id = list(set(self.hash_ids) - set(exist_doc_id))
@@ -114,9 +139,13 @@ class document_pipline():
     async def main(self):
         self.integrity_check()
         self.increment_doc()
-        self.store_text_data()
+        # --- MODIFICATION ---
+        # Capture the return value from store_text_data
+        text_data = self.store_text_data()
         self.store_documents_data()
         self.store_readable_index()
+        # Return the data for the next pipeline
+        return text_data
             
         
         

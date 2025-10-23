@@ -46,125 +46,117 @@ class NodeConfig():
 
     
     def __init__(self,config:Dict[str,Any]):
-        
+            self.config = config['config']
+            self.main_folder = self.config.get('main_folder')
+            if self.main_folder is None:
+                raise ValueError('main_folder is not set')
+                    
+            # Vector store settings
+            self.vector_store = self.config.get('vector_store', 'hnsw') # Default to 'hnsw' if missing
+            self.qdrant_url = self.config.get('qdrant_url', None)
+            self.qdrant_collection_name = self.config.get('qdrant_collection_name', None)
+            self.qdrant_api_key = self.config.get('qdrant_api_key', None)
+            
+            # Graph database settings
+            self.graph_db_type = self.config.get('graph_db_type', 'networkx') # Default to 'networkx'
+            self.neo4j_uri = self.config.get('neo4j_uri', None)
+            self.neo4j_user = self.config.get('neo4j_user', None)
+            self.neo4j_password = self.config.get('neo4j_password', None)
 
-        self.config = config['config']
-        self.main_folder = self.config.get('main_folder')
-        if self.main_folder is None:
-            raise ValueError('main_folder is not set')
-                
-        # Vector store settings
-        self.vector_store = self.config.get('vector_store', 'hnsw') # Default to 'hnsw' if missing
-        self.qdrant_url = self.config.get('qdrant_url', None)
-        self.qdrant_collection_name = self.config.get('qdrant_collection_name', None)
-        self.qdrant_api_key = self.config.get('qdrant_api_key', None)
-        
-        # Graph database settings
-        self.graph_db_type = self.config.get('graph_db_type', 'networkx') # Default to 'networkx'
-        self.neo4j_uri = self.config.get('neo4j_uri', None)
-        self.neo4j_user = self.config.get('neo4j_user', None)
-        self.neo4j_password = self.config.get('neo4j_password', None)
-                
-        if not os.path.exists(self.main_folder):
-            raise ValueError(f'main_folder {self.main_folder} does not exist')
-        
-        self.input_folder = self.main_folder + '/input'
-        self.cache = self.main_folder + '/cache'
-        self.info = self.main_folder + '/info'
-        
-        self.embedding_path = self.cache + '/embedding.parquet'
-        self.text_path = self.cache + '/text.parquet'
-        self.documents_path = self.cache + '/documents.parquet'
-        self.text_decomposition_path = self.cache + '/text_decomposition.jsonl'
-        self.semantic_units_path = self.cache + '/semantic_units.parquet'
-        self.entities_path = self.cache + '/entities.parquet'
-        self.relationship_path = self.cache + '/relationship.parquet'
-        self.graph_path = self.cache + '/new_graph.pkl'
-        self.attributes_path = self.cache + '/attributes.parquet'
-        self.embedding_cache = self.cache + '/embedding_cache.jsonl'
-        self.embedding = self.cache + '/embedding.parquet'
-        self.base_graph_path = self.cache + '/graph.pkl'
-        self.summary_path = self.cache + '/community_summary.jsonl'
-        self.high_level_elements_path = self.cache + '/high_level_elements.parquet'
-        self.high_level_elements_titles_path = self.cache + '/high_level_elements_titles.parquet'
-        self.HNSW_path = self.cache + '/HNSW.bin'
-        self.hnsw_graph_path = self.cache + '/hnsw_graph.pkl'
-        self.id_map_path = self.cache + '/id_map.parquet'
-        self.LLM_error_cache = self.cache + '/LLM_error.jsonl'
-        
-        
-        self.embedding_batch_size = self.config.get('embedding_batch_size',50)
-        self._m = self.config.get('m',5)
-        self._ef = self.config.get('ef',200)
-        self._m0 = self.config.get('m0',None)
-        self.space = self.config.get('space','l2')
-        self.dim = self.config.get('dim',1536)
-        self.docu_type = self.config.get('docu_type','mixed')
-
-        self.Hcluster_size = self.config.get('Hcluster_size',39)
-        self.cross_node = self.config.get('cross_node',10)
-        self.Enode = self.config.get('Enode',10)
-        self.Rnode = self.config.get('Rnode',10)
-        self.Hnode = self.config.get('Hnode',10)
-        
-        self.HNSW_results = self.config.get('HNSW_results',10)
-        self.similarity_weight = self.config.get('similarity_weight',1)
-        self.accuracy_weight = self.config.get('accuracy_weight',10)
-        self.ppr_alpha = self.config.get('ppr_alpha',0.5)
-        self.ppr_max_iter = self.config.get('ppr_max_iter',8)
-        self.unbalance_adjust = self.config.get('unbalance_adjust',False)
-        
-        
-        self.indices_path = self.info + '/indices.json'
-        self.state_path = self.info + '/state.json'
-        self.document_hash_path = self.info + '/document_hash.json'
-        self.info_path = self.info + '/info.log'
-        if not os.path.exists(self.info):
-            os.makedirs(self.info)
-        if not os.path.exists(self.info_path):
-            with open(self.info_path,'w') as f:
-                f.write('')
-        self.info_logger = setup_logger('info_logger',self.info_path)
-        self.timer = []
-        self.tracker = Tracker(self.cache,use_rich=True)
-        self.rich_console = rich_console()
-        self.console = self.rich_console.console
-        self.indices = self.load_indices()
-        
-        
-        
-        self._model_config = config['model_config']
-        self._embedding_config = config['embedding_config']
-        self._language = self.config['language']
-        
-        try:
-            self.API_client = set_api_client(API_client(self.model_config))
-        except:
-            self.API_client = None
-        
-        import traceback
-        try:
-            self.embedding_client = set_embedding_client(API_client(self.embedding_config))
-        except Exception as e:
-            self.console.print('[bold red]Error Sembedding lcient:[/bold red]', e)
-            self.console.print(traceback.format_exc())
+            self.use_local_cache = self.config.get('use_local_cache', True) 
+                    
+            if not os.path.exists(self.main_folder):
+                raise ValueError(f'main_folder {self.main_folder} does not exist')
+            
+            self.input_folder = self.main_folder + '/input'
+            self.cache = self.main_folder + '/cache'
+            self.info = self.main_folder + '/info'
+            
+            self.embedding_path = self.cache + '/embedding.parquet'
+            self.text_path = self.cache + '/text.parquet'
+            self.documents_path = self.cache + '/documents.parquet'
+            self.text_decomposition_path = self.cache + '/text_decomposition.jsonl'
+            self.semantic_units_path = self.cache + '/semantic_units.parquet'
+            self.entities_path = self.cache + '/entities.parquet'
+            self.relationship_path = self.cache + '/relationship.parquet'
+            self.graph_path = self.cache + '/new_graph.pkl'
+            self.attributes_path = self.cache + '/attributes.parquet'
+            self.embedding_cache = self.cache + '/embedding_cache.jsonl'
+            self.embedding = self.cache + '/embedding.parquet'
+            self.base_graph_path = self.cache + '/graph.pkl'
+            self.summary_path = self.cache + '/community_summary.jsonl'
+            self.high_level_elements_path = self.cache + '/high_level_elements.parquet'
+            self.high_level_elements_titles_path = self.cache + '/high_level_elements_titles.parquet'
+            self.HNSW_path = self.cache + '/HNSW.bin'
+            self.hnsw_graph_path = self.cache + '/hnsw_graph.pkl'
+            self.id_map_path = self.cache + '/id_map.parquet'
+            self.LLM_error_cache = self.cache + '/LLM_error.jsonl'
             
             
-        try:
+            self.embedding_batch_size = self.config.get('embedding_batch_size',50)
+            self._m = self.config.get('m',5)
+            self._ef = self.config.get('ef',200)
+            self._m0 = self.config.get('m0',None)
+            self.space = self.config.get('space','l2')
+            self.dim = self.config.get('dim',1536)
+            self.docu_type = self.config.get('docu_type','mixed')
 
-            self.embedding_client = set_embedding_client(API_client(self.embedding_config))
-        except:
-            self.embedding_client = None
-
-        self.semantic_text_splitter = SemanticTextSplitter(self.config['chunk_size'],self.model_config['model_name'])
-        self.token_counter = self.semantic_text_splitter.token_counter
-
-
+            self.Hcluster_size = self.config.get('Hcluster_size',39)
+            self.cross_node = self.config.get('cross_node',10)
+            self.Enode = self.config.get('Enode',10)
+            self.Rnode = self.config.get('Rnode',10)
+            self.Hnode = self.config.get('Hnode',10)
+            
+            self.HNSW_results = self.config.get('HNSW_results',10)
+            self.similarity_weight = self.config.get('similarity_weight',1)
+            self.accuracy_weight = self.config.get('accuracy_weight',10)
+            self.ppr_alpha = self.config.get('ppr_alpha',0.5)
+            self.ppr_max_iter = self.config.get('ppr_max_iter',8)
+            self.unbalance_adjust = self.config.get('unbalance_adjust',False)
+            
+            
+            self.indices_path = self.info + '/indices.json'
+            self.state_path = self.info + '/state.json'
+            self.document_hash_path = self.info + '/document_hash.json'
+            self.info_path = self.info + '/info.log'
+            if not os.path.exists(self.info):
+                os.makedirs(self.info)
+            if not os.path.exists(self.info_path):
+                with open(self.info_path,'w') as f:
+                    f.write('')
+            self.info_logger = setup_logger('info_logger',self.info_path)
+            self.timer = []
+            self.tracker = Tracker(self.cache,use_rich=True)
+            self.rich_console = rich_console()
+            self.console = self.rich_console.console
+            self.indices = self.load_indices()
             
             
             
-        self.prompt_manager = prompt_manager(self._language)
+            self._model_config = config['model_config']
+            self._embedding_config = config['embedding_config']
+            self._language = self.config['language']
+            
+            try:
+                # --- FIX --- Pass console to the factory function
+                self.API_client = set_api_client(API_client(self.model_config, console=self.console))
+            except Exception as e:
+                self.console.print(f'[bold red]Error initializing API client:[/bold red] {e}')
+                self.API_client = None
+            
+            import traceback
+            try:
+                # --- FIX --- Pass console to the factory function
+                self.embedding_client = set_embedding_client(API_client(self.embedding_config, console=self.console))
+            except Exception as e:
+                self.console.print('[bold red]Error initializing embedding client:[/bold red]', e)
+                self.console.print(traceback.format_exc())
+                self.embedding_client = None
 
+            self.semantic_text_splitter = SemanticTextSplitter(self.config['chunk_size'],self.model_config['model_name'])
+            self.token_counter = self.semantic_text_splitter.token_counter
+                    
+            self.prompt_manager = prompt_manager(self._language)
 
 
 
@@ -180,10 +172,12 @@ class NodeConfig():
     def embedding_config(self,embedding_config:dict):
         self._embedding_config = embedding_config
         try:
-            self.embedding_client = set_embedding_client(API_client(self.embedding_config))
-        except:
+            # --- FIX --- Pass console to the factory function here as well
+            self.embedding_client = set_embedding_client(API_client(self.embedding_config, console=self.console))
+        except Exception as e:
             self.embedding_client = None
-            self.console.print(f'warning: embedding_config is not valid')
+            # Added more detailed error logging
+            self.console.print(f'[bold red]Warning: embedding_config is not valid.[/bold red] Error: {e}')
     
 
     @model_config.setter

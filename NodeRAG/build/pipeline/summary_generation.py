@@ -31,8 +31,6 @@ from ...logging import info_timer
 
 class SummaryGeneration:
     def __init__(self,config:NodeConfig):
-        
-        # These lines are common to both versions
         self.config = config
         self.indices = self.config.indices
         self.communities = []
@@ -43,39 +41,47 @@ class SummaryGeneration:
         self.G = None
         self.G_ig = None
 
-        # --- BLOCK 1: Logic for Neo4j ---
         if self.graph_db_type == 'neo4j':
             self.driver = GraphDatabase.driver(
                 self.config.neo4j_uri, 
                 auth=(self.config.neo4j_user, self.config.neo4j_password)
             )
             self.db_session = self.driver.session()
-            self.G_ig = self._get_igraph_from_neo4j() # Helper for community detection
-            self.G = self._get_graph_from_neo4j() # Helper for Community_summary class
+            self.G_ig = self._get_igraph_from_neo4j()
+            self.G = self._get_graph_from_neo4j()
         
-        # --- BLOCK 2: Logic for NetworkX (your original logic) ---
-        else: 
+        else: # networkx mode
             if os.path.exists(self.config.graph_path):
                 self.G = storage.load(self.config.graph_path)
                 self.G_ig = IGraph(self.G).to_igraph()
         
-        # --- BLOCK 3: Common logic that runs for BOTH modes ---
-        # This was moved out of the old "if" block
-        self.mapper = Mapper([self.config.semantic_units_path, self.config.attributes_path])
+        # --- MODIFICATION START ---
+        self.mapper = None
         self.qdrant_client = None 
 
+        if self.config.use_local_cache:
+            # The Mapper is only initialized if local caching is enabled.
+            self.mapper = Mapper([self.config.semantic_units_path,
+                                    self.config.attributes_path])
+            self.config.console.print("[cyan]Summary pipeline: Local cache enabled. Mapper loaded.[/cyan]")
+        else:
+            self.config.console.print("[cyan]Summary pipeline: Local cache disabled. Mapper will not be used.[/cyan]")
+
         if getattr(self.config, 'vector_store', None) == 'qdrant':
-            self.config.console.print("[bold cyan]Summary pipeline is in Qdrant mode...")
+            self.config.console.print("[bold cyan]Summary pipeline is in Qdrant mode. Will fetch embeddings from the server.[/bold cyan]")
             self.qdrant_client = AsyncQdrantClient(
                 url=getattr(self.config, 'qdrant_url'),
                 api_key=getattr(self.config, 'qdrant_api_key', None)
             )
-        else:
-            self.config.console.print("[bold cyan]Summary pipeline is in local file mode...")
-            if os.path.exists(self.config.embedding):
+        else: # Local HNSW mode
+            self.config.console.print("[bold cyan]Summary pipeline is in local file mode. Loading embeddings from disk.[/bold cyan]")
+            # This logic now depends on the mapper, so we must check if it exists.
+            if self.mapper and os.path.exists(self.config.embedding):
                 self.mapper.add_embedding(self.config.embedding)
-            else:
-                self.config.console.print(f"[bold red]ERROR: Local embedding file not found...")
+            elif self.mapper is None and not self.qdrant_client:
+                 self.config.console.print(f"[bold red]ERROR: Local file mode requires local cache, but it is disabled. Summary generation may fail.[/bold red]")
+            elif self.mapper and not os.path.exists(self.config.embedding):
+                self.config.console.print(f"[bold red]ERROR: Local embedding file not found at {self.config.embedding}. Summary generation may fail.[/bold red]")
 
     def _get_graph_from_neo4j(self):
         """
@@ -126,13 +132,55 @@ class SummaryGeneration:
         return graph_ig
     
     def partition(self):
-        
-        partition = la.find_partition(self.G_ig,la.ModularityVertexPartition)
-        
-        for i,community in enumerate(partition):
-            community_name = [self.G_ig.vs[node]['name'] for node in community if self.G_ig.vs[node]['name'] in self.mapper.mapping]
+        """
+        This function is the orchestrator. It fetches data based on the cache setting
+        and passes the prepared data (not dependencies) to the component.
+        """
+        if not self.G_ig or self.G_ig.vcount() == 0:
+            self.config.console.print("[yellow]Graph for community detection is empty. Skipping partition.[/yellow]")
+            return
             
-            self.communities.append(Community_summary(community_name,self.mapper,self.G,self.config))
+        partition = la.find_partition(self.G_ig, la.ModularityVertexPartition)
+        
+        for i, community in enumerate(partition):
+            
+            community_node_ids = [self.G_ig.vs[node]['name'] for node in community]
+            community_contexts = []
+            
+            # This is the core logic that decides where to get the data from.
+            if self.mapper:
+                # CACHE-ENABLED MODE: Get contexts from the fast, in-memory mapper.
+                self.config.console.print(f"[cyan]Partition: Fetching contexts for community {i} from local cache...[/cyan]")
+                for node_id in community_node_ids:
+                    node_data = self.mapper.get(node_id)
+                    # We only want to summarize semantic units.
+                    if node_data and node_data.get('type') == 'semantic_unit':
+                        community_contexts.append(node_data.get('context', ''))
+            
+            elif self.graph_db_type == 'neo4j':
+                # PURE DATABASE MODE: Get contexts directly from Neo4j.
+                self.config.console.print(f"[cyan]Partition: Fetching contexts for community {i} from Neo4j...[/cyan]")
+                if not community_node_ids:
+                    continue # Skip empty communities
+                
+                query = """
+                UNWIND $ids AS nodeId
+                MATCH (n:SemanticUnit {hash_id: nodeId})
+                WHERE n.context IS NOT NULL
+                RETURN n.context AS context
+                """
+                results = self.db_session.run(query, ids=community_node_ids)
+                community_contexts = [record['context'] for record in results]
+
+            # The Community_summary object is now created with the pre-fetched contexts.
+            self.communities.append(
+                Community_summary(
+                    community_node=community_node_ids, 
+                    community_contexts=community_contexts, 
+                    graph=self.G,
+                    config=self.config
+                )
+            )
             
     async def generate_community_summary(self,community:Community_summary):
         
@@ -188,13 +236,14 @@ class SummaryGeneration:
         self.config.tracker.update()
 
    
+
     async def high_level_element_summary(self):
         results = []
         
-        # Safety Check 1: Ensure the summary file exists and is not empty.
+        # Safety Check 1: Ensure the summary file exists and is not empty before trying to read it.
         if not os.path.exists(self.config.summary_path) or os.path.getsize(self.config.summary_path) == 0:
             self.config.console.print("[bold yellow]WARN: Summary file is empty or does not exist. Skipping high-level element summary.[/bold yellow]")
-            return
+            return # Exit the function gracefully
 
         with open(self.config.summary_path, 'r', encoding='utf-8') as f:
             for line in f:
@@ -211,9 +260,11 @@ class SummaryGeneration:
             node_names = result.get('community')
             response_data = result.get('response')
 
+            # Safety Check 2: The 'response' must be a list to proceed.
             if isinstance(response_data, list):
                 for high_level_element in response_data:
                     
+                    # Safety Check 3: Ensure each item in the list is a dictionary with the keys we need.
                     if not isinstance(high_level_element, dict) or 'description' not in high_level_element or 'title' not in high_level_element:
                         self.config.console.print(f"[bold yellow]WARN: Skipping malformed high_level_element: {high_level_element}[/bold yellow]")
                         continue
@@ -222,7 +273,6 @@ class SummaryGeneration:
                     he.related_node(node_names)
                     
                     if self.graph_db_type == 'neo4j':
-                        # Use Cypher MERGE to create/update nodes and relationships
                         self.db_session.run("""
                             MERGE (h:HighLevelElement {hash_id: $h_id})
                             ON CREATE SET h.weight = 1, h.type = 'high_level_element', h.context = $context
@@ -235,8 +285,7 @@ class SummaryGeneration:
                             MERGE (h)-[:HAS_TITLE]->(t)
                         """, h_id=he.hash_id, t_id=he.title_hash_id, context=he.context, title=he.title)
                         high_level_elements.append(he)
-                    
-                    else: # networkx mode
+                    else: # networkx
                         if self.G.has_node(he.hash_id):
                             self.G.nodes[he.hash_id]['weight'] += 1
                             if self.G.has_node(he.title_hash_id):
@@ -257,6 +306,7 @@ class SummaryGeneration:
 
         self.config.tracker.close()
 
+        # Safety Check 4: Don't proceed to embedding/clustering if no elements were created.
         if not self.high_level_elements:
             self.config.console.print("[bold yellow]WARN: No high-level elements were generated. Skipping embedding and clustering.[/bold yellow]")
             return
@@ -266,21 +316,28 @@ class SummaryGeneration:
         centroids = math.ceil(math.sqrt(len(All_nodes) + len(self.high_level_elements)))
         threshold = (len(All_nodes) + len(self.high_level_elements)) / centroids if centroids > 0 else 0
         n = 0
-        
-        # Clustering Logic to add more edges
         if threshold > self.config.Hcluster_size:
             embedding_list = None
             if self.qdrant_client:
+                # QDRANT MODE: Fetch vectors from the Qdrant server.
                 self.config.console.print(f"[cyan]Fetching {len(All_nodes)} vectors from Qdrant for clustering...[/cyan]")
                 ids_to_retrieve = [str(uuid.uuid5(uuid.NAMESPACE_DNS, node_id)) for node_id in All_nodes]
                 retrieved_points = await self.qdrant_client.retrieve(
                     collection_name=self.config.qdrant_collection_name,
-                    ids=ids_to_retrieve, with_vectors=True
+                    ids=ids_to_retrieve,
+                    with_vectors=True
                 )
                 vector_map = {point.payload['hash_id']: point.vector for point in retrieved_points}
                 embedding_list = np.array([vector_map[node_id] for node_id in All_nodes if node_id in vector_map], dtype=np.float32)
+
+            elif self.mapper:
+                # LOCAL FILE MODE: Use the mapper, but only if it exists.
+                self.config.console.print("[cyan]Fetching vectors from local cache for clustering...[/cyan]")
+                embedding_list = np.array([self.mapper.embeddings[node] for node in All_nodes if node in self.mapper.embeddings], dtype=np.float32)
+            
             else:
-                embedding_list = np.array([self.mapper.embeddings[node] for node in All_nodes], dtype=np.float32)
+                self.config.console.print("[bold yellow]WARN: Clustering requires embeddings, but local cache is disabled and Qdrant is not configured. Skipping clustering.[/bold yellow]")
+
 
             high_level_element_embedding = np.array([he.embedding for he in self.high_level_elements], dtype=np.float32)
             
@@ -303,12 +360,13 @@ class SummaryGeneration:
                                     MATCH (he_node:HighLevelElement {hash_id: $he_id})
                                     MERGE (source_node)-[:RELATED_TO]->(he_node)
                                 """, source_id=All_nodes[j], he_id=self.high_level_elements[i].hash_id)
-                            else: # networkx
+                            else:
                                 self.G.add_edge(All_nodes[j], self.high_level_elements[i].hash_id, weight=1)
                             n += 1
                     self.config.tracker.update()
             else:
-                self.config.console.print("[bold yellow]WARN: No source embeddings found for clustering. Skipping edge creation.[/bold yellow]")
+                self.config.console.print("[bold yellow]WARN: No source embeddings found for clustering. Skipping edge creation based on clusters.[/bold yellow]")
+
         else:
             self.config.tracker.set(len(self.high_level_elements), 'Adding High Level Element Summary')
             for he in self.high_level_elements:
@@ -319,7 +377,7 @@ class SummaryGeneration:
                             MATCH (he_node:HighLevelElement {hash_id: $he_id})
                             MERGE (source_node)-[:RELATED_TO]->(he_node)
                         """, source_id=node, he_id=he.hash_id)
-                    else: # networkx
+                    else:
                         self.G.add_edge(node, he.hash_id, weight=1)
                     n += 1
                 self.config.tracker.update()
@@ -344,6 +402,9 @@ class SummaryGeneration:
         
         
     def store_high_level_elements(self):
+        if not self.config.use_local_cache:
+            self.config.console.print("[cyan]Local cache disabled. Skipping creation of high-level-elements and embedding parquet files.[/cyan]")
+            return
         
         high_level_elements = []
         titles = []

@@ -148,6 +148,11 @@ class Embedding_pipeline():
     
             
     async def generate_embeddings(self):
+        # --- THIS IS THE FIX ---
+        # Delete any old cache file to ensure a clean run.
+        self.delete_embedding_cache()
+        # --- END OF FIX ---
+
         tasks = []
         none_embedding_ids = self.mapper.find_none_embeddings()
         self.config.tracker.set(math.ceil(len(none_embedding_ids)/self.config.embedding_batch_size),desc='Generating embeddings')
@@ -321,12 +326,15 @@ class Embedding_pipeline():
             await self._ensure_qdrant_collection_exists_async()
             
         # It will only run if there are new embeddings to generate or cache to process.
-        self.check_embedding_cache()
+        
+        # --- THIS IS THE FIX ---
+        # self.check_embedding_cache() # <--- REMOVE THIS LINE
+        # --- END OF FIX ---
+        
         await self.generate_embeddings()
         await self.insert_embeddings_async()
-        self.delete_embedding_cache()    
+        self.delete_embedding_cache()     
         self.check_error_cache()
-            
         
     
     

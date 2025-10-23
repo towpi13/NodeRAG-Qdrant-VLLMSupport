@@ -22,35 +22,50 @@ class NodeSearch():
         
         self.config = config
         
-        # Graph Database Setup (no changes here)
+        # --- THIS IS THE FIX ---
+        # Initialize graph-related attributes first.
         self.graph_db_type = getattr(self.config, 'graph_db_type', 'networkx')
         self.driver = None
-        self.db_session = None
+        self.db_session = None # Ensure the attribute is always defined.
+        self.G = None
+
         if self.graph_db_type == 'neo4j':
+            # Create the Neo4j driver and session at startup.
             self.driver = GraphDatabase.driver(
-                self.config.neo4j_uri, auth=(self.config.neo4j_user, self.config.neo4j_password)
+                self.config.neo4j_uri, 
+                auth=(self.config.neo4j_user, self.config.neo4j_password)
             )
-            self.db_session = self.driver.session()
-            self.G = None
-        else:
+            self.db_session = self.driver.session() # This line was missing or incorrect.
+        else: # networkx mode
             self.G = self.load_graph()
             self.sparse_PPR = sparse_PPR(self.G)
+        # --- END OF FIX ---
 
         # Vector Store Setup
         self.vector_store = getattr(self.config, 'vector_store', 'hnsw')
         self.hnsw = None
+        # The qdrant_client is correctly left as None, to be created on-demand per request.
         self.qdrant_client = None 
+        if self.vector_store == 'hnsw':
+             self.hnsw = self.load_hnsw()
         
-        # Mapper and text map logic remains the same
-        self.mapper = self.load_mapper()
-        if self.mapper:
-            print("✅ Local cache (Mapper) loaded successfully.")
-            self.id_to_text, self.accurate_id_to_text = self.mapper.generate_id_to_text(['entity','high_level_element_title'])
+        # Mapper logic (correct as is)
+        self.mapper = None
+        self.id_to_text, self.accurate_id_to_text = {}, {}
+        
+        if self.config.use_local_cache:
+            self.mapper = self.load_mapper()
+            if self.mapper:
+                print("✅ Local cache (Mapper) loaded successfully.")
+                self.id_to_text, self.accurate_id_to_text = self.mapper.generate_id_to_text(['entity','high_level_element_title'])
+            else:
+                print("⚠️ Could not load local cache files even though caching is enabled. Will fall back to database queries.")
         else:
-            print("⚠️ Could not load local cache. Will fall back to database queries for text content.")
-            self.id_to_text, self.accurate_id_to_text = {}, {}
+            print("✅ Local cache is disabled. Operating in pure database mode.")
+            print("   -> Accurate text search feature will be handled by Neo4j.")
             
         self._semantic_units = None
+
 
     async def _get_texts_from_db_async(self, ids: List[str], qdrant_client: AsyncQdrantClient):
         """
@@ -150,76 +165,135 @@ class NodeSearch():
 
 
     async def _async_search(self, query: str):
-        """
-        The top-level async helper. It now correctly manages the lifecycle of the async client
-        for each individual request to prevent "Event loop is closed" errors.
-        """
-        # Initialize a new client for this specific request.
-        client = None
-        if self.vector_store == 'qdrant':
-            client = AsyncQdrantClient(
-                url=self.config.qdrant_url, 
-                api_key=self.config.qdrant_api_key,
-                timeout=30.0
-            )
-        
-        try:
-            # Step 1: Initialize Retrieval object
-            retrieval = Retrieval(self.config)
-            retrieval.accurate_id_to_text = self.accurate_id_to_text
-
-            # Step 2: Perform vector search
-            embedding_list = self.config.embedding_client.request(query)
-            query_embedding = np.array(embedding_list[0], dtype=np.float32)
-
-            HNSW_results = []
+            """
+            The top-level async helper that contains all async operations for a single search request.
+            It correctly manages the lifecycle of the async client to prevent "Event loop is closed" errors
+            and uses a multi-source strategy to correctly identify all node types.
+            """
+            # Create a new, temporary client for this specific request.
+            client = None
             if self.vector_store == 'qdrant':
-                # Use the new, request-specific client
-                search_results = await client.search(
-                    collection_name=self.config.qdrant_collection_name,
-                    query_vector=query_embedding,
-                    limit=self.config.HNSW_results
+                client = AsyncQdrantClient(
+                    url=self.config.qdrant_url, 
+                    api_key=self.config.qdrant_api_key,
+                    timeout=30.0
                 )
-                HNSW_results = [(point.score, point.payload['hash_id']) for point in search_results]
-            else:
-                HNSW_results = self.hnsw.search(query_embedding, HNSW_results=self.config.HNSW_results)
             
-            retrieval.HNSW_results_with_distance = HNSW_results
-            
-            # Steps 3, 4, 5, 6... (The rest of the synchronous logic is the same)
-            decomposed_entities = self.decompose_query(query)
-            accurate_results = self.accurate_search(decomposed_entities)
-            retrieval.accurate_results = accurate_results
-            personlization = {ids: self.config.similarity_weight for ids in retrieval.HNSW_results}
-            personlization.update({id: self.config.accuracy_weight for id in retrieval.accurate_results})
-            weighted_nodes = self.graph_search(personlization)
-            retrieval = self.post_process_top_k(weighted_nodes, retrieval)
-            
-            # Step 7: Populate final data maps
-            final_node_ids = list(retrieval.unique_search_list)
-            
-            # 7a. Populate id_to_type map (no change)
-            if self.graph_db_type == 'networkx':
-                retrieval.id_to_type = { node_id: self.G.nodes[node_id].get('type') for node_id in final_node_ids if node_id in self.G }
-            elif self.graph_db_type == 'neo4j' and final_node_ids:
-                type_query = "UNWIND $ids AS nodeId MATCH (n {hash_id: nodeId}) RETURN n.hash_id AS hash_id, labels(n)[0] AS type"
-                results = self.db_session.run(type_query, ids=final_node_ids)
-                type_map = {"Entity": "entity", "SemanticUnit": "semantic_unit", "Relationship": "relationship", "HighLevelElementTitle": "high_level_element_title", "Attribute": "attribute"}
-                retrieval.id_to_type = {record['hash_id']: type_map.get(record['type'], record['type'].lower()) for record in results}
+            try:
+                # Step 1: Initialize the Retrieval object to hold our results.
+                retrieval = Retrieval(self.config)
+                retrieval.accurate_id_to_text = self.accurate_id_to_text
 
-            # 7b. Populate id_to_text map
-            if self.graph_db_type == 'networkx':
-                retrieval.id_to_text = { node_id: self.mapper.get(node_id, 'context') for node_id in final_node_ids if self.mapper.get(node_id, 'context') }
-            elif self.graph_db_type == 'neo4j':
-                # Pass the new, request-specific client to the fallback function
-                retrieval.id_to_text = await self._get_texts_from_db_async(final_node_ids, qdrant_client=client)
+                # --- THIS IS THE FIX ---
+                # Initialize lists to prevent 'NoneType' error on early exit.
+                # If the embedding client fails, the function will return this
+                # retrieval object, and these attributes must be iterable.
+                retrieval.relationship_list = []
+                retrieval.search_list = []
+                # --- END OF FIX ---
 
-            return retrieval
+                # Step 2: Perform the initial vector search to find semantic entry points.
+                embedding_list = self.config.embedding_client.request(query)
+                # Step 2a: Validate the response from the embedding client before using it.
+                if not (
+                    isinstance(embedding_list, list) and      # Check if it's a list
+                    embedding_list and                      # Check if the list is not empty
+                    isinstance(embedding_list[0], list) and   # Check if the first item is also a list (the vector)
+                    embedding_list[0]                       # Check if the inner vector list is not empty
+                ):
+                    # If validation fails, log a clear diagnostic message and exit gracefully.
+                    self.config.console.print(f"[bold red]ERROR: Invalid or error response from embedding client.[/bold red]")
+                    self.config.console.print(f"       -> Expected a list of lists of floats, but got: {embedding_list}")
+                    # Return the empty (but now safe) Retrieval object to prevent a server crash.
+                    return retrieval 
+                
+                # If validation passes, we can now safely proceed.
+                query_embedding = np.array(embedding_list[0], dtype=np.float32)
 
-        finally:
-            # Ensure the client connection is always closed at the end of the request
-            if client:
-                await client.close()
+                HNSW_results = []
+                if self.vector_store == 'qdrant' and client:
+                    # Use the new, request-specific client.
+                    search_results = await client.search(
+                        collection_name=self.config.qdrant_collection_name,
+                        query_vector=query_embedding,
+                        limit=self.config.HNSW_results
+                    )
+                    HNSW_results = [(point.score, point.payload['hash_id']) for point in search_results]
+                elif self.vector_store == 'hnsw':
+                    HNSW_results = self.hnsw.search(query_embedding, HNSW_results=self.config.HNSW_results)
+                
+                retrieval.HNSW_results_with_distance = HNSW_results
+                
+                # Steps 3, 4, 5, 6: Perform synchronous parts of the search pipeline.
+                decomposed_entities = self.decompose_query(query)
+                accurate_results = self.accurate_search(decomposed_entities)
+                retrieval.accurate_results = accurate_results
+                
+                personlization = {ids: self.config.similarity_weight for ids in retrieval.HNSW_results}
+                personlization.update({id: self.config.accuracy_weight for id in retrieval.accurate_results})
+                
+                weighted_nodes = self.graph_search(personlization)
+                retrieval = self.post_process_top_k(weighted_nodes, retrieval)
+                
+                # Step 7: Populate the final data maps (types and text) for the retrieval object.
+                final_node_ids = list(retrieval.unique_search_list)
+                
+                # 7a. Populate the id_to_type map using a comprehensive strategy.
+                if self.graph_db_type == 'networkx':
+                    retrieval.id_to_type = {
+                        node_id: self.G.nodes[node_id].get('type') 
+                        for node_id in final_node_ids if node_id in self.G
+                    }
+                
+                elif self.graph_db_type == 'neo4j' and final_node_ids:
+                    # --- PURE DATABASE MODE: Multi-source type lookup ---
+                    id_to_type_map = {}
+
+                    # 7a-1: Primary Source - Query Neo4j for types of nodes that exist IN THE GRAPH.
+                    type_query = """
+                    UNWIND $ids AS nodeId
+                    MATCH (n {hash_id: nodeId})
+                    RETURN n.hash_id AS hash_id, labels(n)[0] AS type
+                    """
+                    results = self.db_session.run(type_query, ids=final_node_ids)
+                    type_map_neo4j = {
+                        "Entity": "entity", "SemanticUnit": "semantic_unit", "Relationship": "relationship",
+                        "HighLevelElementTitle": "high_level_element_title", "Attribute": "attribute"
+                    }
+                    for record in results:
+                        id_to_type_map[record['hash_id']] = type_map_neo4j.get(record['type'], record['type'].lower())
+
+                    # 7a-2: Secondary Source - Query Qdrant for any remaining unknown types (like 'Text' nodes).
+                    ids_still_missing_type = [node_id for node_id in final_node_ids if node_id not in id_to_type_map]
+                    if ids_still_missing_type and client:
+                        qdrant_ids_map = {str(uuid.uuid5(uuid.NAMESPACE_DNS, id_str)): id_str for id_str in ids_still_missing_type}
+                        
+                        retrieved_points = await client.retrieve(
+                            collection_name=self.config.qdrant_collection_name,
+                            ids=list(qdrant_ids_map.keys()),
+                            with_payload=["type"] # Only fetch the 'type' field to be efficient
+                        )
+                        for point in retrieved_points:
+                            if point.payload and 'type' in point.payload:
+                                original_hash_id = qdrant_ids_map.get(str(point.id))
+                                if original_hash_id:
+                                    id_to_type_map[original_hash_id] = point.payload['type']
+                    
+                    retrieval.id_to_type = id_to_type_map
+
+                # 7b. Populate id_to_text map using the robust cache-fallback strategy.
+                if self.graph_db_type == 'networkx':
+                    retrieval.id_to_text = { node_id: self.mapper.get(node_id, 'context') for node_id in final_node_ids if self.mapper.get(node_id, 'context') }
+                elif self.graph_db_type == 'neo4j':
+                    # Pass the request-specific client to the fallback function.
+                    retrieval.id_to_text = await self._get_texts_from_db_async(final_node_ids, qdrant_client=client)
+
+                return retrieval
+
+            finally:
+                # Ensure the client connection is always closed at the end of the request.
+                if client:
+                    await client.close()
 
 
     def search(self, query: str):
@@ -256,24 +330,60 @@ class NodeSearch():
         return []    
     
     def accurate_search(self, entities: List[str]) -> List[str]:
+        """
+        Performs a direct, exact-match keyword search.
+        
+        - If the local cache (mapper) is loaded, it performs a fast, in-memory regex search.
+        - If in pure database mode, it performs a case-insensitive CONTAINS search
+          directly against the Neo4j database.
+        """
+        if not entities:
+            return []
+            
         accurate_results = []
-        
-        for entity in entities:
-            # Split entity into words and create a pattern to match the whole phrase
-            words = entity.lower().split()
-            pattern = re.compile(r'\b' + r'\s+'.join(map(re.escape, words)) + r'\b')
-            result = [id for id, text in self.accurate_id_to_text.items() if pattern.search(text.lower())]
-            if result:
-                accurate_results.extend(result)
-        
-        return accurate_results
+
+        # Case 1: The fast, in-memory search using the loaded local cache.
+        # self.accurate_id_to_text is only populated if the cache loads successfully.
+        if self.accurate_id_to_text:
+            for entity in entities:
+                # Build a regex pattern to find the exact phrase as whole words
+                words = entity.lower().split()
+                pattern = re.compile(r'\b' + r'\s+'.join(map(re.escape, words)) + r'\b')
+                
+                # Search the in-memory dictionary
+                result = [id for id, text in self.accurate_id_to_text.items() if pattern.search(text.lower())]
+                if result:
+                    accurate_results.extend(result)
+            
+            return list(set(accurate_results)) # Use set to remove duplicates
+
+        # Case 2: Pure database mode. Query Neo4j for an exact match.
+        # This block runs if the cache was intentionally disabled or failed to load.
+        elif self.graph_db_type == 'neo4j':
+            self.config.console.print("[cyan]Performing accurate search via Neo4j query...[/cyan]")
+            
+            # This Cypher query iterates through the entities found in the user's question.
+            # For each one, it finds nodes where the 'context' or 'human_readable_id'
+            # contains that entity text (case-insensitive).
+            query = """
+            UNWIND $entities AS entityName
+            MATCH (n) 
+            WHERE toLower(n.context) CONTAINS toLower(entityName) 
+               OR toLower(n.human_readable_id) CONTAINS toLower(entityName)
+            RETURN n.hash_id AS hash_id
+            """
+            
+            results = self.db_session.run(query, entities=entities)
+            accurate_results = [record['hash_id'] for record in results]
+            
+            return list(set(accurate_results)) # Use set to remove potential duplicates
+
+        # Case 3: The feature is unavailable (e.g., NetworkX mode without cache).
+        else:
+            return []
     
-    
-    def answer(self,query:str,id_type:bool=True):
-        
-        
+    def answer(self,query:str,id_type:bool=True):    
         retrieval = self.search(query)
-        
         ans = Answer(query,retrieval)
         
         if id_type:

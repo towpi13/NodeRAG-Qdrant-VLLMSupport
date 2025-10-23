@@ -76,8 +76,8 @@ class NodeImportance:
         
         
 class Attribution_generation_pipeline:
-            
     def __init__(self,config:NodeConfig):
+        
         self.config = config
         self.prompt_manager = config.prompt_manager
         self.indices = config.indices
@@ -92,18 +92,23 @@ class Attribution_generation_pipeline:
         self.G = None
 
         if self.graph_db_type == 'neo4j':
-            # This pipeline runs after the graph is built, so we connect to read from it.
             self.driver = GraphDatabase.driver(
                 self.config.neo4j_uri, 
                 auth=(self.config.neo4j_user, self.config.neo4j_password)
             )
             self.db_session = self.driver.session()
-            # The mapper is still needed to get text for nodes already saved to parquet
-            self.mapper = Mapper([self.config.entities_path,self.config.relationship_path,self.config.semantic_units_path])
         else: # networkx mode
-            # Load the graph from the pickle file
             self.G = storage.load(self.config.graph_path)
-            self.mapper = Mapper([self.config.entities_path,self.config.relationship_path,self.config.semantic_units_path])
+
+        # The Mapper is part of the local cache system. Only load it if enabled.
+        self.mapper = None
+        if self.config.use_local_cache:
+            # This check ensures that if caching is enabled, the prerequisite files must exist.
+            if os.path.exists(self.config.entities_path):
+                self.mapper = Mapper([self.config.entities_path,self.config.relationship_path,self.config.semantic_units_path])
+            else:
+                self.config.console.print("[bold red]Error: Local cache is enabled, but prerequisite entity files are missing.[/bold red]")
+                raise FileNotFoundError("Missing cache files required by Attribute pipeline.")
 
 
     def get_important_nodes(self):
@@ -123,6 +128,12 @@ class Attribution_generation_pipeline:
         else: # networkx
             temp_G = self.G
 
+        ## Reactive Self-Loop Removal (commented out for now)
+        # self_loops = list(nx.selfloop_edges(temp_G))
+        # if self_loops:
+        #     self.console.print(f"[bold yellow]WARN: Found and removed {len(self_loops)} self-loops from the graph before analysis.[/bold yellow]")
+        #     temp_G.remove_edges_from(self_loops)
+
         node_importance = NodeImportance(temp_G, self.config.console)
         important_nodes = node_importance.main()
         
@@ -137,42 +148,42 @@ class Attribution_generation_pipeline:
     
     def get_neighbours_material(self,node:str):
        
-        # This part is fine, as the 'important node' itself will be in the mapper
-        entity = self.mapper.get(node,'context')
-        
+        entity = ""
         semantic_neighbours = ''+'\n'
         relationship_neighbours = ''+'\n'
        
         if self.graph_db_type == 'neo4j':
-            # Query Neo4j not just for the neighbor's ID, but also for its type and context.
-            # This makes the function independent of the mapper for neighbor data.
-            query = """
+            # When cache is disabled or mapper is missing, we MUST get the entity's context from the database.
+            if self.mapper:
+                entity = self.mapper.get(node, 'context')
+            else:
+                entity_context_query = "MATCH (n {hash_id: $id}) RETURN n.context AS context"
+                entity_result = self.db_session.run(entity_context_query, id=node).single()
+                entity = entity_result['context'] if entity_result else ""
+
+            # This query is already robust and gets neighbor data from the DB
+            neighbor_query = """
             MATCH (n {hash_id: $id})--(neighbor)
             RETURN labels(neighbor)[0] AS neighbor_type, neighbor.context AS neighbor_context
             """
-            records = self.db_session.run(query, id=node)
+            records = self.db_session.run(neighbor_query, id=node)
             
             for record in records:
                 neighbor_type = record['neighbor_type']
                 neighbor_context = record['neighbor_context']
-                
-                # We need to map the Label from Neo4j to your internal type names
-                type_map = {
-                    "Entity": "entity",
-                    "SemanticUnit": "semantic_unit",
-                    "Relationship": "relationship",
-                }
+                type_map = {"Entity": "entity", "SemanticUnit": "semantic_unit", "Relationship": "relationship"}
                 mapped_type = type_map.get(neighbor_type)
 
-                if neighbor_context: # Only add if context exists
+                if neighbor_context:
                     if mapped_type == 'semantic_unit':
                         semantic_neighbours += f'{neighbor_context}\n'
                     elif mapped_type == 'relationship':
                         relationship_neighbours += f'{neighbor_context}\n'
 
-        else: # The original networkx logic is still needed as a fallback
+        else: # networkx mode
+            # The networkx logic relies on the mapper, which is guaranteed to exist in this branch.
+            entity = self.mapper.get(node,'context')
             for neighbour in self.G.neighbors(node):
-                # Using .get() on the dictionary is safer than direct access
                 neighbour_data = self.mapper.get(neighbour)
                 if neighbour_data:
                     if neighbour_data.get('type') == 'semantic_unit':
@@ -250,28 +261,25 @@ class Attribution_generation_pipeline:
 
     def save_attributes(self):
         
+        # This entire function is now conditional on the cache flag.
+        if not self.config.use_local_cache:
+            self.config.console.print("[cyan]Local cache disabled. Skipping creation of attributes.parquet.[/cyan]")
+            return
+
         attributes = []
-        
         for attribute in self.attributes:
-            # The weight lookup needs to be conditional
-            weight = 1 # Default weight
+            weight = 1
             if self.graph_db_type == 'networkx':
                  weight = self.G.nodes[attribute.node]['weight']
-
-            attributes.append({'node':attribute.node,
-                               'type':'attribute',
-                                 'context':attribute.raw_context,
-                                 'hash_id':attribute.hash_id,
-                                 'human_readable_id':attribute.human_readable_id,
-                                 'weight': weight,
-                                 'embedding':None})
+            attributes.append({'node':attribute.node, 'type':'attribute', 'context':attribute.raw_context,
+                                 'hash_id':attribute.hash_id, 'human_readable_id':attribute.human_readable_id,
+                                 'weight': weight, 'embedding':None})
         
-        # This part is now unconditional
         if not attributes:
-            self.console.print("[yellow]No new attributes were generated, but creating an empty cache file for consistency.[/yellow]")
+            self.config.console.print("[yellow]No new attributes were generated, but creating an empty cache file for consistency.[/yellow]")
         
         storage(attributes).save_parquet(self.config.attributes_path,append= os.path.exists(self.config.attributes_path))
-        self.console.print('[bold green]Attributes stored[/bold green]')
+        self.config.console.print('[bold green]Attributes stored[/bold green]')
         
         
     def save_graph(self):

@@ -21,9 +21,7 @@ from ...logging import info_timer
 
 
 class Graph_pipeline:
-
-
-    def __init__(self,config:NodeConfig, db_type: str = 'networkx'): # Add db_type parameter
+    def __init__(self,config:NodeConfig, db_type: str = 'networkx', decomposed_data: list = None):
         
         self.config = config
         self.db_type = db_type # Store the database type
@@ -41,7 +39,7 @@ class Graph_pipeline:
             raise ValueError("Unsupported db_type. Choose 'networkx' or 'neo4j'.")
 
         self.indices = self.config.indices
-        self.data ,self.processed_data = self.load_data()
+        self.data, self.processed_data = self.load_data(decomposed_data)
         self.API_request = self.config.API_client
         self.prompt_manager = self.config.prompt_manager
         self.semantic_units = []
@@ -66,7 +64,16 @@ class Graph_pipeline:
         # You might want to add a check to see if the database is available.
         return None # or return the driver session
         
-    def load_data(self)->List[LLMOutput]:
+    def load_data(self, decomposed_data: list = None)->tuple[list, list]:
+        # --- MODIFICATION ---
+        # If data is passed in-memory, use it. Otherwise, load from the file.
+        if decomposed_data is not None:
+            self.config.console.print("[cyan]Graph pipeline received data in-memory.[/cyan]")
+            # The 'decomposed_data' is already in the correct format (a list of dicts)
+            return decomposed_data, []
+
+        # This is the original logic for the cache-enabled path
+        self.config.console.print("[cyan]Graph pipeline loading data from cache file.[/cyan]")
         data_list = []
         processed_data = []
         with open(self.config.text_decomposition_path, 'r', encoding='utf-8') as f:
@@ -206,11 +213,13 @@ class Graph_pipeline:
                     """, su_hash_id=semantic_unit_hash_id, e_hash_id=entity_hash_id)
             
 
+
     async def add_relationships(self, relationships: List[str], text_hash_id: str):
             
             entities_hash_id = []
             
             # --- STAGE 1: PARSE AND COLLECT ALL RELATIONSHIPS ---
+            # This stage takes the raw list of strings from the LLM and cleans them up.
             relationships_to_process = []
             for rel_string in relationships:
                 relationship_parts = [part.strip() for part in rel_string.split(',')]
@@ -219,17 +228,29 @@ class Graph_pipeline:
                     # This relationship is already well-formed
                     relationships_to_process.append(relationship_parts)
                 else:
-                    # This one needs reconstruction. It might return multiple relationships.
+                    # This one needs reconstruction via another LLM call.
                     reconstructed_rels = await self.reconstruct_relationship(relationship_parts)
-                    # Use .extend() to add all the found relationships to our list
+                    # Use .extend() in case the reconstruction returns multiple relationships.
                     relationships_to_process.extend(reconstructed_rels)
 
             # --- STAGE 2: PROCESS THE CLEANED LIST OF RELATIONSHIPS ---
             for relationship_parts in relationships_to_process:
                 
+                # Create the main Relationship object
                 sanitized_relationship = [str(p) for p in relationship_parts]
                 relationship_obj = Relationship(sanitized_relationship, text_hash_id)
+                
+                # --- THIS IS THE FIX ---
+                # Proactively check for and skip self-loops before they enter the database.
+                # This ensures high data quality in the graph.
+                if relationship_obj.source.hash_id == relationship_obj.target.hash_id:
+                    self.console.print(f"[bold yellow]WARN: Skipping self-loop relationship found for node '{relationship_obj.source.human_readable_id}'.[/bold yellow]")
+                    continue # Skip to the next relationship in the loop
+                # --- END OF FIX ---
+
                 hash_id = relationship_obj.hash_id
+                
+                # Check if we've already processed this exact relationship
                 if hash_id in self.relationship_lookup:
                     Re = self.relationship_lookup[hash_id]
                     Re.add(relationship_obj.raw_context)
@@ -238,27 +259,33 @@ class Graph_pipeline:
                 self.relationship.append(relationship_obj)
                 self.relationship_lookup[hash_id] = relationship_obj
                 
+                # Conditional logic for writing to the chosen database
                 if self.db_type == 'networkx':
+                    # Add the relationship as a node, and the source/target as nodes
                     for node in [relationship_obj.source, relationship_obj.target, relationship_obj]:
                         if not self.G.has_node(node.hash_id):
-                            self.G.add_node(node.hash_id, type='entity' if node in [relationship_obj.source, relationship_obj.target] else 'relationship', weight=1)
-                            if node in [relationship_obj.source, relationship_obj.target]:
+                            node_type = 'entity' if node in [relationship_obj.source, relationship_obj.target] else 'relationship'
+                            self.G.add_node(node.hash_id, type=node_type, weight=1)
+                            if node_type == 'entity':
                                 self.relationship_nodes.append(node)
                                 entities_hash_id.append(node.hash_id)
-                            
+                        
+                    # Add edges connecting source -> relationship -> target
                     for edge in [(relationship_obj.source.hash_id, relationship_obj.hash_id), (relationship_obj.hash_id, relationship_obj.target.hash_id)]:
                         if not self.G.has_edge(*edge):
                             self.G.add_edge(*edge, weight=1)
                         else:
                             self.G[edge[0]][edge[1]]['weight'] += 1
-                        
+                            
                 elif self.db_type == 'neo4j':
-                    # Add context properties for source and target nodes on creation
+                    # This Cypher query will now only ever receive valid, non-self-loop data.
                     self.G.run("""
                         MERGE (source:Entity {hash_id: $source_hash_id})
                         ON CREATE SET source.weight = 1, source.type = 'entity', source.name = $source_name, source.context = $source_context
+                        
                         MERGE (target:Entity {hash_id: $target_hash_id})
                         ON CREATE SET target.weight = 1, target.type = 'entity', target.name = $target_name, target.context = $target_context
+                        
                         MERGE (source)-[:RELATIONSHIP {type:$rel_type, hash_id:$rel_hash_id}]->(target)
                         """,
                         source_hash_id=relationship_obj.source.hash_id,
@@ -269,6 +296,7 @@ class Graph_pipeline:
                         target_context=relationship_obj.target.raw_context,
                         rel_type=relationship_obj.human_readable_id,
                         rel_hash_id=relationship_obj.hash_id)
+                    
                     entities_hash_id.append(relationship_obj.source.hash_id)
                     entities_hash_id.append(relationship_obj.target.hash_id)
                         
@@ -377,24 +405,42 @@ class Graph_pipeline:
         return relationships
         
         
+
     def save(self):
-        # The save to parquet files is still useful for backup or other processing
+        # --- MODIFICATION START ---
+        # This is now the main gatekeeper. If local caching is disabled,
+        # we skip ALL file-writing operations in this pipeline.
+        if not self.config.use_local_cache:
+            self.config.console.print("[cyan]Local cache disabled. Skipping creation of all graph-related .parquet files.[/cyan]")
+            return
+        # --- MODIFICATION END ---
+            
+        # If caching is enabled, the original logic runs:
         semantic_units = self.save_semantic_units()
         entities = self.save_entities()
         relationships = self.save_relationships()
+        
+        # This part is now only executed if use_local_cache is true.
         storage(semantic_units).save_parquet(self.config.semantic_units_path,append= os.path.exists(self.config.semantic_units_path))
         storage(entities).save_parquet(self.config.entities_path,append= os.path.exists(self.config.entities_path))
         storage(relationships).save_parquet(self.config.relationship_path,append= os.path.exists(self.config.relationship_path))
         self.console.print('[green]Semantic units, entities and relationships stored[/green]')
         
     def save_graph(self):
+        # We need to make this conditional as well, for NetworkX mode.
         if self.db_type == 'networkx':
-            if self.data:
+            # --- MODIFICATION START ---
+            if not self.config.use_local_cache:
+                self.config.console.print("[cyan]Local cache disabled. Skipping creation of graph.pkl.[/cyan]")
+                return
+            # --- MODIFICATION END ---
+
+            if self.data: # This check is still good
                 storage(self.G).save_pickle(self.config.graph_path)
                 self.console.print('[green]Graph stored[/green]')
+
         elif self.db_type == 'neo4j':
-            # With Neo4j, data is saved as it's processed. 
-            # You might want to close the session/driver here if you are done.
+            # This logic is fine, as it doesn't create a cache file.
             self.G.close()
             self.driver.close()
             self.console.print('[green]Neo4j session closed[/green]')

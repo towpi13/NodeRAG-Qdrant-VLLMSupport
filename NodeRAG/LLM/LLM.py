@@ -5,6 +5,7 @@ from json import JSONDecodeError
 import json
 import aiohttp
 import requests
+from rich.console import Console
 
 from ..logging.error import (
     error_handler,
@@ -372,19 +373,22 @@ class Gemini(LLM):
     
 
 class Gemini_Embedding(LLM):
-    
     def __init__(self, 
-                 model_name: str, 
-                 api_keys: str | None,
-                 Config: ModelConfig|None) -> None:
-        # Initialize using the parent LLM class
-        super().__init__(model_name, api_keys, Config)
-        if self.api_keys is None:
-            self.api_keys = os.getenv('GOOGLE_API_KEY')
-        
-        # Set the specific endpoint for batch embeddings
-        self.api_url = f"{GEMINI_API_URL}/{self.model_name}:batchEmbedContents"
-        self.headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_keys}
+                    model_name: str, 
+                    api_keys: str | None,
+                    Config: ModelConfig|None,
+                    console: Console) -> None:  # <--- 1. ADD 'console: Console' HERE
+            # Initialize using the parent LLM class
+            super().__init__(model_name, api_keys, Config)
+            
+            self.console = console  # <--- 2. ADD THIS LINE TO SAVE IT
+
+            if self.api_keys is None:
+                self.api_keys = os.getenv('GOOGLE_API_KEY')
+            
+            # Set the specific endpoint for batch embeddings
+            self.api_url = f"{GEMINI_API_URL}/{self.model_name}:batchEmbedContents"
+            self.headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_keys}
 
     def extract_config(self, config: ModelConfig) -> ModelConfig:
         # This method is required by the abstract parent class.

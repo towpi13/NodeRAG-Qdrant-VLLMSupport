@@ -47,6 +47,7 @@ config:
   main_folder: .  # Root folder for document processing
   language: English                  # Document processing language
   docu_type: mixed                   # Document type (mixed, pdf, txt, etc.)
+  use_local_cache: true               # Enable local caching
   # Chunking Settings
   chunk_size: 1048                   # Size of text chunks for processing
   embedding_batch_size: 50           # Batch size for embedding processing

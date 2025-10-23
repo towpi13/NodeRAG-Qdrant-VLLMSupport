@@ -32,27 +32,28 @@ class Text_unit(Unit_base):
         
  
     
-    async def text_decomposition(self,config) -> None:  
+    async def text_decomposition(self,config) -> dict: # Modified to return a dictionary
                 
-        cache_path = config.text_decomposition_path
         prompt = config.prompt_manager.text_decomposition.format(text=self.raw_context)
         json_format = config.prompt_manager.text_decomposition_json
         input_data = {'query':prompt,'response_format':json_format}
         meta_data = {'text_hash_id':self.hash_id,'text_id':self.human_readable_id}
 
-     
         response = await config.API_client(input_data,cache_path =config.LLM_error_cache,meta_data = meta_data)
         
-        if response == 'Error cached':
-            config.tracker.update()
-            return None
-        
-            
-        with open(cache_path, 'a',encoding='utf-8') as f:
-            data = {**meta_data,'response':response}
-            f.write(json.dumps(data,ensure_ascii=False)+'\n')
         config.tracker.update()
-        # return response
+
+        if response == 'Error cached':
+            return None # Return None on error
         
+        # Instead of writing to a file, create the data packet and return it.
+        data = {**meta_data,'response':response}
+
+        if config.use_local_cache:
+            cache_path = config.text_decomposition_path
+            with open(cache_path, 'a',encoding='utf-8') as f:
+                f.write(json.dumps(data,ensure_ascii=False)+'\n')
+                
+        return data
         
     

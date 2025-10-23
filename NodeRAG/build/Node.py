@@ -49,6 +49,10 @@ class NodeRag():
         self._hash_ids = None
         self.observers = []
         self.web_ui = web_ui
+
+        if not os.path.exists(self.config.cache):
+            self.config.console.print(f"[cyan]Creating essential cache directory at: {self.config.cache}[/cyan]")
+            os.makedirs(self.config.cache)
         
         # 1. Read the graph database type from the config, defaulting to 'networkx'.
         self.graph_db_type = getattr(self.config, 'graph_db_type', 'networkx')
@@ -127,6 +131,8 @@ class NodeRag():
     
     async def state_transition(self):
         
+        # A variable to hold data passed between pipeline states when caching is disabled.
+        pipeline_output = None
         
         try:
             while True:
@@ -157,20 +163,31 @@ class NodeRag():
                         self.config.whole_time()
                         return
 
-                # 2. Conditionally instantiate the pipeline based on the current state.
+                # This is the core of the new orchestration logic.
+                # It conditionally instantiates pipelines based on their specific needs.
                 
                 pipeline_class = self.state_pipeline_map[self.Current_state]
+                pipeline_instance = None
                 
-                if self.Current_state == State.GRAPH_PIPELINE:
-                    # If it's the graph pipeline, pass the db_type parameter
-                    pipeline_instance = pipeline_class(self.config, db_type=self.graph_db_type)
+                if self.Current_state == State.TEXT_PIPELINE:
+                    # The text pipeline can receive in-memory data from the document pipeline.
+                    # 'pipeline_output' will contain the text data if caching is off.
+                    pipeline_instance = pipeline_class(self.config, texts_data=pipeline_output)
+                
+                elif self.Current_state == State.GRAPH_PIPELINE:
+                    # The graph pipeline needs to know the database type.
+                    # 'pipeline_output' contains the decomposed text data from the text pipeline.
+                    pipeline_instance = pipeline_class(self.config, db_type=self.graph_db_type, decomposed_data=pipeline_output)
+
                 else:
-                    # For all other pipelines, instantiate them normally
+                    # For all other pipelines, instantiate them normally.
                     pipeline_instance = pipeline_class(self.config)
 
                 self.config.console.print(f"[bold green]Processing {self.Current_state.value} pipeline...[/bold green]")
-                await pipeline_instance.main()
-
+                
+                # Run the pipeline and capture its output to be passed to the next stage.
+                pipeline_output = await pipeline_instance.main()
+                
                 self.config.console.print(f"[bold green]Processing {self.Current_state.value} pipeline finished.[/bold green]")
         
         except Exception as e:
