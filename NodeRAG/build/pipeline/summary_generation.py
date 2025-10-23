@@ -90,7 +90,7 @@ class SummaryGeneration:
         node_results = self.db_session.run(node_query)
         for record in node_results:
             # Map Neo4j Label (e.g., 'Entity') to your internal type name (e.g., 'entity')
-            node_type = record['node_type'].lower() if record['node_type'] else 'unknown'
+            node_type = record['node_type'].lower() if record['node_type'] else 'Text'
             temp_G.add_node(record['node_id'], type=node_type)
             
         # 2. Fetch all relationships

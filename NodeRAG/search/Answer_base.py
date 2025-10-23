@@ -47,7 +47,7 @@ class Retrieval():
             retrieved = []
             for id in self.search_list:
                 if id in self.id_to_text: # Ensure text exists
-                    retrieved.append((self.id_to_text[id], self.id_to_type.get(id, 'unknown')))
+                    retrieved.append((self.id_to_text[id], self.id_to_type.get(id, 'Text')))
             
             for id in self.relationship_list:
                  if id in self.id_to_text: # Ensure text exists
