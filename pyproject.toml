@@ -113,7 +113,7 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-packages = ["NodeRAG"]
+
 
 [tool.setuptools.package-data]
 NodeRAG = ["/config/*.yaml"]
